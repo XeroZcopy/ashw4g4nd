@@ -21,7 +21,7 @@ import httpx
 import requests
 from bs4 import BeautifulSoup
 
-BOT_TOKEN_CFG = "8833581225:AAG-gNy4O7a2zC3AiJqA-HFFdjD4rNT0yKw"
+BOT_TOKEN_CFG = "8834572052:AAH0BtFT8rVOf4Jusgh88Y4pAEt9vlZjEsc"
 ADMIN_IDS_CFG = [8557521484, 6138292855, 5277564584]
 OWNER_ID_CFG = 6138292855
 
@@ -1106,7 +1106,7 @@ def require_subscription(func):
         
         if not check_subscription(user_id):
             markup = types.InlineKeyboardMarkup(row_width=1)
-            markup.add(types.InlineKeyboardButton("📢 ПОДПИСАТЬСЯ", url=CHANNEL_LINK))
+            markup.add(types.InlineKeyboardButton("Подписаться", url=CHANNEL_LINK))
             markup.add(types.InlineKeyboardButton("🔍 Проверить", callback_data="check_sub"))
             
             msg = bot.send_message(
@@ -1313,6 +1313,7 @@ function toggleAccordion(el) {{
 def get_main_menu():
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.row(types.InlineKeyboardButton("🔍 Приступим", callback_data="menu_enter"))
+    markup.row(types.InlineKeyboardButton("🔗 Зеркала ", url="https://routermirrors.onrender.com"))
     markup.row(
         types.InlineKeyboardButton("👤 Профиль", callback_data="menu_profile"),
         types.InlineKeyboardButton("💎 Подписка", callback_data="menu_subscription")
