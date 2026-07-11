@@ -1,4 +1,5 @@
 import sys
+import string
 import os
 import re
 import time
@@ -37,14 +38,181 @@ FACE_MAX_FILE_SIZE = 5 * 1024 * 1024
 FACE_DETECT_ENDPOINT = "/bff/detect-faces"
 FACE_SEARCH_ENDPOINT = "/bff/search-faces"
 
-FUNSTAT_TOKEN = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOiI3NjcyMDkyMDIzIiwianRpIjoiY2I4YWIzMjEtNGUwMi00NmM2LTkyODAtYjAyZGMzNjBlY2U3IiwiZXhwIjoxODEzMzQ4NzM0fQ.ZvbeqetyRiOTi9LM3pfRyr7mC6_lx4t46rVi7GWQQ0xkWmGPmJyxmo8R6DOF1s8Bne0W--LtzgP63R6uKNjFF9mpCmKQilPAwUvGWjjaDkDi9A9FZW2dTEmx2odeULFgQZTsc8FeC5D909IdvZCdiTbesvdFnGLsIi-DDOyj33U"
+FUNSTAT_TOKEN = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOiI3NjcyMDkyMDIzIiwianRpIjoiY2I4YWIzMjEtNGUwMi00NmM2LWkyODAtYjAyZGMzNjBlY2U3IiwiZXhwIjoxODEzMzQ4NzM0fQ.ZvbeqetyRiOTi9LM3pfRyr7mC6_lx4t46rVi7GWQQ0xkWmGPmJyxmo8R6DOF1s8Bne0W--LtzgP63R6uKNjFF9mpCmKQilPAwUvGWjjaDkDi9A9FZW2dTEmx2odeULFgQZTsc8FeC5D909IdvZCdiTbesvdFnGLsIi-DDOyj33U"
 FUNSTAT_API_URL = "https://funstat.info/api/v1"
+
+# ====== BIGBASE ======
+BIGBASE_TOKEN = "hEtcNRmBOGUxGwHX9NfOccaIXbyqCmRF"
+BIGBASE_URL = "https://bigbase.top/api"
+
+# ====== TELEGRAM OSINT API ======
+TG_OSINT_TOKEN = "76:fBn742F2bJNyb6wW6jatmrZ3NVkogjjO"
+TG_OSINT_BASE_URL = "https://kartoshka.free/v1"
+TG_OSINT_HEADERS = {"Authorization": f"Bearer {TG_OSINT_TOKEN}"}
 
 face_results_cache = {}
 fanstat_limits = {}
 DAILY_LIMIT = 3
 
-# ====== TEMP MAIL DB ======
+def tg_osint_api_get(endpoint, params=None):
+    try:
+        res = requests.get(f"{TG_OSINT_BASE_URL}{endpoint}", headers=TG_OSINT_HEADERS, params=params, timeout=10)
+        if res.status_code != 200:
+            return None
+        data = res.json()
+        if not data.get("ok"):
+            return None
+        return data.get("result")
+    except Exception:
+        return None
+
+def tg_osint_search_owner(query):
+    result = tg_osint_api_get("/owners/search", {"q": query, "limit": 1})
+    if result is None:
+        return None
+    items = result.get("items", [])
+    if not items:
+        return None
+    return items[0]
+
+def tg_osint_get_transfer_history(query):
+    found = tg_osint_search_owner(query)
+    if found is None:
+        return None
+    
+    owner = found.get("owner", {})
+    ref = owner.get("username") or owner.get("telegramId") or owner.get("seeId")
+    
+    info_text = f"= ИНФОРМАЦИЯ О ПОЛЬЗОВАТЕЛЕ =\n"
+    info_text += f"Username: {owner.get('username', 'Нет')}\n"
+    info_text += f"Telegram ID: {owner.get('telegramId', 'Нет')}\n"
+    info_text += f"Имя: {owner.get('name', 'Нет')}\n\n"
+    
+    all_items = []
+    cursor = None
+    while True:
+        params = {"limit": 100}
+        if cursor:
+            params["cursor"] = cursor
+        result = tg_osint_api_get(f"/owner/{ref}/history", params)
+        if result is None:
+            break
+        items = result.get("items", [])
+        if not items:
+            break
+        all_items.extend(items)
+        cursor = result.get("nextCursor")
+        if not cursor:
+            break
+
+    transfers = [i for i in all_items if i.get("kind") == "GIFT" and i.get("giftAction", {}).get("action") == "transfer"]
+    transfers.sort(key=lambda x: x.get("time", ""), reverse=True)
+
+    if not transfers:
+        return info_text + "История переводов пуста"
+
+    result_text = info_text + f"= ИСТОРИЯ ПЕРЕВОДОВ ({len(transfers)}) =\n\n"
+    
+    for idx, item in enumerate(transfers[:10], 1):
+        ga = item.get("giftAction", {})
+        gift = ga.get("gift", {})
+        slug = gift.get("slug", "")
+        num = gift.get("num", "")
+        url = f"https://t.me/nft/{slug}-{num}" if slug else "Нет ссылки"
+        
+        from_user = ga.get("from", {})
+        to_user = ga.get("to", {})
+        
+        from_str = from_user.get("username") if from_user else "Скрыто"
+        to_str = to_user.get("username") if to_user else "Скрыто"
+        date_str = item.get("time", "")[:10] if item.get("time") else "Нет даты"
+        
+        result_text += f"{idx}. {date_str}\n"
+        result_text += f"   От: @{from_str}\n"
+        result_text += f"   Кому: @{to_str}\n"
+        result_text += f"   Ссылка: {url}\n\n"
+    
+    return result_text
+
+def tg_osint_get_name_history(query):
+    found = tg_osint_search_owner(query)
+    if found is None:
+        return None
+    
+    owner = found.get("owner", {})
+    ref = owner.get("username") or owner.get("telegramId") or owner.get("seeId")
+    
+    info_text = f"= ИНФОРМАЦИЯ О ПОЛЬЗОВАТЕЛЕ =\n"
+    info_text += f"Username: {owner.get('username', 'Нет')}\n"
+    info_text += f"Telegram ID: {owner.get('telegramId', 'Нет')}\n"
+    info_text += f"Имя: {owner.get('name', 'Нет')}\n\n"
+    
+    all_items = []
+    cursor = None
+    while True:
+        params = {"limit": 100, "fields": "username,usernames,first_name"}
+        if cursor:
+            params["cursor"] = cursor
+        result = tg_osint_api_get(f"/owner/{ref}/history", params)
+        if result is None:
+            break
+        items = result.get("items", [])
+        if not items:
+            break
+        all_items.extend(items)
+        cursor = result.get("nextCursor")
+        if not cursor:
+            break
+
+    name_events = [i for i in all_items if i.get("kind") != "GIFT"]
+
+    if not name_events:
+        return info_text + "Нет истории смены имен/юзернеймов"
+
+    result_text = info_text + f"= ИСТОРИЯ ИМЕН ({len(name_events)}) =\n\n"
+    
+    last_str = None
+    for idx, item in enumerate(name_events, 1):
+        usernames = item.get("usernames", item.get("username", []))
+        if isinstance(usernames, str):
+            usernames = [usernames]
+
+        formatted = [u if u.startswith("@") else f"@{u}" for u in usernames]
+        curr_str = ", ".join(formatted) if formatted else "Нет юзернейма"
+        
+        date_str = item.get("time", "")[:10] if item.get("time") and "T" in item.get("time", "") else "Нет даты"
+
+        if curr_str != last_str:
+            result_text += f"{idx}. {date_str} -> {curr_str}\n"
+            last_str = curr_str
+
+    return result_text
+
+def bigbase_search(query):
+    try:
+        headers = {
+            "Authorization": BIGBASE_TOKEN,
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "search": query,
+            "page": 1
+        }
+        r = requests.post(
+            BIGBASE_URL + "/search",
+            headers=headers,
+            json=payload,
+            timeout=10
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if "user" in data and isinstance(data["user"], dict):
+            data["user"].pop("api_token", None)
+        return data
+    except Exception:
+        return None
+
 DB_PATH = os.path.expanduser("~/.tempmail.db")
 
 def init_db():
@@ -63,7 +231,7 @@ def get_or_create_user():
         cursor.execute("SELECT id FROM users ORDER BY id LIMIT 1")
         row = cursor.fetchone()
         if not row:
-            cursor.execute("INSERT INTO users (username, created_at) VALUES (?, ?)", 
+            cursor.execute("INSERT INTO users (username, created_at) VALUES (?, ?)",
                            (os.getlogin() if hasattr(os, 'getlogin') else "user", datetime.now().isoformat()))
             conn.commit()
             user_id = cursor.lastrowid
@@ -99,7 +267,7 @@ def save_mail(service: str, address: str, token: str):
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO mails (service, address, token, created_at) VALUES (?,?,?,?)", 
+        cursor.execute("INSERT INTO mails (service, address, token, created_at) VALUES (?,?,?,?)",
                        (service, address, token, datetime.now().isoformat()))
         conn.commit()
         conn.close()
@@ -291,50 +459,50 @@ def format_date(date_str):
     return "Нет данных"
 
 def format_telegram_result_html(data: dict, query: str) -> str:
-    result = ["🔍 <b>Информация о пользователе</b>", "=" * 30 + "\n"]
+    result = [" <b>Информация о пользователе</b>", "=" * 30 + "\n"]
     stats = data.get('stats', {})
 
     if not stats:
-        result.append("❌ <b>Пользователь не найден в базе данных!</b>")
+        result.append(" <b>Пользователь не найден в базе данных!</b>")
         return "\n".join(result)
 
-    result.append(f"🆔 ID: <code>{stats.get('id', '')}</code>")
-    if stats.get('first_name'): result.append(f"👤 Имя: {stats.get('first_name')}")
-    if stats.get('last_name'): result.append(f"📝 Фамилия: {stats.get('last_name')}")
-    if stats.get('is_bot'): result.append(f"🤖 Бот: {'Да' if stats.get('is_bot') else 'Нет'}")
-    if stats.get('is_active'): result.append(f"✅ Активен: {'Да' if stats.get('is_active') else 'Нет'}")
-    if stats.get('first_msg_date'): result.append(f"📅 Первое сообщение: {format_date(stats.get('first_msg_date'))}")
-    if stats.get('last_msg_date'): result.append(f"📅 Последнее сообщение: {format_date(stats.get('last_msg_date'))}")
-    if stats.get('total_msg_count'): result.append(f"💬 Всего сообщений: {stats.get('total_msg_count')}")
-    if stats.get('total_groups'): result.append(f"📊 Групп: {stats.get('total_groups')}")
-    if stats.get('usernames_count'): result.append(f"📛 Username использовано: {stats.get('usernames_count')}")
-    if stats.get('names_count'): result.append(f"📝 Имён использовано: {stats.get('names_count')}")
-    if stats.get('adm_in_groups'): result.append(f"👑 Администратор в группах: {stats.get('adm_in_groups')}")
-    if stats.get('is_premium'): result.append(f"⭐ Премиум: {'Да' if stats.get('is_premium') else 'Нет'}")
-    if stats.get('is_verified'): result.append(f"✔️ Верифицирован: {'Да' if stats.get('is_verified') else 'Нет'}")
+    result.append(f" ID: <code>{stats.get('id', '')}</code>")
+    if stats.get('first_name'): result.append(f" Имя: {stats.get('first_name')}")
+    if stats.get('last_name'): result.append(f" Фамилия: {stats.get('last_name')}")
+    if stats.get('is_bot'): result.append(f" Бот: {'Да' if stats.get('is_bot') else 'Нет'}")
+    if stats.get('is_active'): result.append(f" Активен: {'Да' if stats.get('is_active') else 'Нет'}")
+    if stats.get('first_msg_date'): result.append(f" Первое сообщение: {format_date(stats.get('first_msg_date'))}")
+    if stats.get('last_msg_date'): result.append(f" Последнее сообщение: {format_date(stats.get('last_msg_date'))}")
+    if stats.get('total_msg_count'): result.append(f" Всего сообщений: {stats.get('total_msg_count')}")
+    if stats.get('total_groups'): result.append(f" Групп: {stats.get('total_groups')}")
+    if stats.get('usernames_count'): result.append(f" Username использовано: {stats.get('usernames_count')}")
+    if stats.get('names_count'): result.append(f" Имён использовано: {stats.get('names_count')}")
+    if stats.get('adm_in_groups'): result.append(f" Администратор в группах: {stats.get('adm_in_groups')}")
+    if stats.get('is_premium'): result.append(f" Премиум: {'Да' if stats.get('is_premium') else 'Нет'}")
+    if stats.get('is_verified'): result.append(f" Верифицирован: {'Да' if stats.get('is_verified') else 'Нет'}")
 
     result.append("")
     names = data.get('names', [])
     if names:
-        result.append(f"📝 <b>История имен:</b> ({len(names)})")
+        result.append(f" <b>История имен:</b> ({len(names)})")
         for i, item in enumerate(names, 1):
             name = item.get('name', 'Не указано')
             date = format_date(item.get('date_time', ''))
             result.append(f"{'└' if i == len(names) else '├'} {date} -> {name}")
     else:
-        result.append("📝 <b>История имен:</b> Нет данных")
+        result.append(" <b>История имен:</b> Нет данных")
 
     result.append("")
     usernames = data.get('usernames', [])
     if usernames:
-        result.append(f"📛 <b>История юзернеймов:</b> ({len(usernames)})")
+        result.append(f" <b>История юзернеймов:</b> ({len(usernames)})")
         for i, item in enumerate(usernames, 1):
             name = item.get('name', '')
             date = format_date(item.get('date_time', ''))
             if name:
                 result.append(f"{'└' if i == len(usernames) else '├'} {date} -> @{name}")
     else:
-        result.append("📛 <b>История юзернеймов:</b> Нет данных")
+        result.append(" <b>История юзернеймов:</b> Нет данных")
 
     return "\n".join(result)
 
@@ -892,10 +1060,11 @@ async def search_phone(phone: str, cfg: dict) -> list:
         check_deepscan(phone, "phone"),
         check_snusbase(phone, "email"),
         check_ofdata(phone, "phone"),
+        asyncio.to_thread(bigbase_search, phone),
         return_exceptions=True,
     )
     labels = ["[BD API]", "[DEPSEARCH]", "[LOCAL DB]", "[SMSC]", "[NUMLOOKUP]", "[LEAKCHECK]",
-              "[ZVONILI]", "[HTMLWEB GEO]", "[PHONE REPUTATION]", "[SEON]", "[INFINITY]", "[FADEAPI]", "[DEEPSCAN]", "[SNUSBASE]", "[OFDATA]"]
+              "[ZVONILI]", "[HTMLWEB GEO]", "[PHONE REPUTATION]", "[SEON]", "[INFINITY]", "[FADEAPI]", "[DEEPSCAN]", "[SNUSBASE]", "[OFDATA]", "[BIGBASE]"]
     return _build_sections(labels, results)
 
 async def search_email(email: str, cfg: dict) -> list:
@@ -913,10 +1082,11 @@ async def search_email(email: str, cfg: dict) -> list:
         check_fadeapi(email, "email"),
         check_deepscan(email, "email"),
         check_ofdata(email, "email"),
+        asyncio.to_thread(bigbase_search, email),
         return_exceptions=True,
     )
     labels = ["[BD API]", "[DEPSEARCH]", "[LOCAL DB]", "[LEAKCHECK]", "[PROXYNOVA]",
-              "[CAVALIER]", "[HUNTER]", "[XPOSED]", "[SNUSBASE]", "[INFINITY]", "[FADEAPI]", "[DEEPSCAN]", "[OFDATA]"]
+              "[CAVALIER]", "[HUNTER]", "[XPOSED]", "[SNUSBASE]", "[INFINITY]", "[FADEAPI]", "[DEEPSCAN]", "[OFDATA]", "[BIGBASE]"]
     return _build_sections(labels, results)
 
 async def search_ip(ip: str, cfg: dict) -> list:
@@ -939,11 +1109,12 @@ async def search_ip(ip: str, cfg: dict) -> list:
         check_abuseipdb(ip, cfg['ABUSEIPDB_KEY']),
         check_deepscan(ip, "ip"),
         check_fadeapi(ip, "ip"),
+        asyncio.to_thread(bigbase_search, ip),
         return_exceptions=True,
     )
     labels = ["[BD API]", "[DEPSEARCH]", "[LOCAL DB]", "[IPINFO]", "[IPWHOIS]", "[IPGEOLOCATION]",
               "[FREEGEOIP]", "[IP2LOCATION]", "[IPBASE]", "[DB-IP]", "[IPLEAK]",
-              "[SYPEXGEO]", "[GEOPLUGIN]", "[SHODAN]", "[SHODAN V2]", "[ABUSEIPDB]", "[DEEPSCAN]", "[FADEAPI]"]
+              "[SYPEXGEO]", "[GEOPLUGIN]", "[SHODAN]", "[SHODAN V2]", "[ABUSEIPDB]", "[DEEPSCAN]", "[FADEAPI]", "[BIGBASE]"]
     return _build_sections(labels, results)
 
 async def search_vk(vk_id: str, cfg: dict) -> list:
@@ -956,9 +1127,10 @@ async def search_vk(vk_id: str, cfg: dict) -> list:
         check_vk_murix(vk_id),
         check_fadeapi(vk_id, "vk"),
         check_deepscan(vk_id, "vk"),
+        asyncio.to_thread(bigbase_search, vk_id),
         return_exceptions=True,
     )
-    labels = ["[BD API]", "[DEPSEARCH]", "[LOCAL DB]", "[VK OFFICIAL]", "[LOOKA.ONE]", "[MURIX]", "[FADEAPI]", "[DEEPSCAN]"]
+    labels = ["[BD API]", "[DEPSEARCH]", "[LOCAL DB]", "[VK OFFICIAL]", "[LOOKA.ONE]", "[MURIX]", "[FADEAPI]", "[DEEPSCAN]", "[BIGBASE]"]
     return _build_sections(labels, results)
 
 async def search_nick(query: str, cfg: dict) -> list:
@@ -970,9 +1142,10 @@ async def search_nick(query: str, cfg: dict) -> list:
         check_fadeapi(query, "nick"),
         check_deepscan(query, "nick"),
         check_snusbase(query, "email"),
+        asyncio.to_thread(bigbase_search, query),
         return_exceptions=True,
     )
-    labels = ["[BD API]", "[BD API SHERLOCK]", "[DEPSEARCH]", "[LOCAL DB]", "[FADEAPI]", "[DEEPSCAN]", "[SNUSBASE]"]
+    labels = ["[BD API]", "[BD API SHERLOCK]", "[DEPSEARCH]", "[LOCAL DB]", "[FADEAPI]", "[DEEPSCAN]", "[SNUSBASE]", "[BIGBASE]"]
     return _build_sections(labels, results)
 
 async def search_egrul(inn: str, cfg: dict) -> list:
@@ -984,9 +1157,10 @@ async def search_egrul(inn: str, cfg: dict) -> list:
         check_ofdata(inn, "inn"),
         check_fadeapi(inn, "inn"),
         check_deepscan(inn, "inn"),
+        asyncio.to_thread(bigbase_search, inn),
         return_exceptions=True,
     )
-    labels = ["[BD API]", "[DEPSEARCH]", "[LOCAL DB]", "[ЕГРЮЛ]", "[OFDATA]", "[FADEAPI]", "[DEEPSCAN]"]
+    labels = ["[BD API]", "[DEPSEARCH]", "[LOCAL DB]", "[ЕГРЮЛ]", "[OFDATA]", "[FADEAPI]", "[DEEPSCAN]", "[BIGBASE]"]
     return _build_sections(labels, results)
 
 async def search_simple(endpoint: str, query: str, cfg: dict) -> list:
@@ -997,9 +1171,10 @@ async def search_simple(endpoint: str, query: str, cfg: dict) -> list:
         check_fadeapi(query, endpoint),
         check_deepscan(query, endpoint),
         check_snusbase(query, "email"),
+        asyncio.to_thread(bigbase_search, query),
         return_exceptions=True,
     )
-    labels = ["[BD API]", "[DEPSEARCH]", "[LOCAL DB]", "[FADEAPI]", "[DEEPSCAN]", "[SNUSBASE]"]
+    labels = ["[BD API]", "[DEPSEARCH]", "[LOCAL DB]", "[FADEAPI]", "[DEEPSCAN]", "[SNUSBASE]", "[BIGBASE]"]
     return _build_sections(labels, results)
 
 def sync_search_phone(phone, cfg):   return run_async(search_phone(phone, cfg))
@@ -1030,7 +1205,7 @@ ABUSEIPDB_KEY = "70bcb231c3ae0194917804f23f6f96843bffec2bf2304f09f24b327c3f340d2
 API_BASE = "http://94.26.90.84:8000"
 API_TOKEN = "5KDOIVqn9uvDD17LsThnnwZjMAZsAUEiFtDPhcyc"
 DEPSEARCH_TOKEN = "w8wxpMncT84SyYSDobV6zSFdZGqcnAoJ"
-DEPSEARCH_BACKUP_TOKEN = "w8wxpMncT84SyYSDobV6zSFdZGqcnAoJ"  
+DEPSEARCH_BACKUP_TOKEN = "w8wxpMncT84SyYSDobV6zSFdZGqcnAoJ"
 HUNTER_API_KEY = "c750a854258bf1a9c264f6166ca7e34f0a3c783d"
 
 CFG = {
@@ -1050,7 +1225,7 @@ CFG = {
 }
 
 bot = telebot.TeleBot(BOT_TOKEN)
-BANNER_URL = "https://i.ibb.co/vvCtXmy5/IMG-20260630-233445-391.jpg"
+BANNER_URL = "https://i.ibb.co/QsWtP30/IMG-20260711-180652-126.jpg"
 
 user_requests = defaultdict(list)
 banned_users = set()
@@ -1105,13 +1280,15 @@ def require_subscription(func):
             return func(message_or_call, *args, **kwargs)
         
         if not check_subscription(user_id):
-            markup = types.InlineKeyboardMarkup(row_width=1)
-            markup.add(types.InlineKeyboardButton("Подписаться", url=CHANNEL_LINK))
-            markup.add(types.InlineKeyboardButton("🔍 Проверить", callback_data="check_sub"))
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            markup.row(
+                types.InlineKeyboardButton("Подписаться", url=CHANNEL_LINK),
+                types.InlineKeyboardButton("Проверить", callback_data="check_sub")
+            )
             
             msg = bot.send_message(
                 chat_id,
-                "🔒 **НЕ ПОТЕРЯЙТЕ БОТА**\n\n"
+                " **НЕ ПОТЕРЯЙТЕ БОТА**\n\n"
                 "Подпишитесь на канал, чтобы всегда быть в курсе обновлений и не потерять доступ!",
                 parse_mode="Markdown",
                 reply_markup=markup
@@ -1296,7 +1473,7 @@ function toggleAccordion(el) {{
 <body>
 <div class="container">
 <div class="header">
-  <h1>📡 {title}</h1>
+  <h1>{title}</h1>
   <div class="sub">Router Report — {timestamp}</div>
   <div class="stats">
     <div class="stat"><span class="stat-num">{len(sections)}</span><span class="stat-label">Источников</span></div>
@@ -1311,47 +1488,54 @@ function toggleAccordion(el) {{
     return html_template
 
 def get_main_menu():
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.row(types.InlineKeyboardButton("🔍 Приступим", callback_data="menu_enter"))
-    markup.row(types.InlineKeyboardButton("🔗 Зеркала ", url="https://routermirrors.onrender.com"))
+    markup = types.InlineKeyboardMarkup()
     markup.row(
-        types.InlineKeyboardButton("👤 Профиль", callback_data="menu_profile"),
-        types.InlineKeyboardButton("💎 Подписка", callback_data="menu_subscription")
+        types.InlineKeyboardButton("⌕ Приступим", callback_data="menu_enter"),
+        types.InlineKeyboardButton("♔ Профиль", callback_data="menu_profile")
+    )
+    markup.row(
+        types.InlineKeyboardButton("✧ Подписка", callback_data="menu_subscription")
     )
     return markup
 
 def get_enter_menu():
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.row(types.InlineKeyboardButton("Пробив 📎", callback_data="menu_search"))
-    markup.row(types.InlineKeyboardButton("Искуственный интелект 🧠", callback_data="menu_ai"))
-    markup.row(types.InlineKeyboardButton("Поиск по лицу 👤", callback_data="menu_face"))
-    markup.row(types.InlineKeyboardButton("Логгер 🎭", callback_data="menu_logger"))
-    markup.row(types.InlineKeyboardButton("Временная почта ✉️", callback_data="menu_tempmail"))
-    markup.row(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_main"))
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("Пробив", callback_data="menu_search"))
+    markup.add(types.InlineKeyboardButton("Искусственный интеллект", callback_data="menu_ai"))
+    markup.add(types.InlineKeyboardButton("Поиск по лицу", callback_data="menu_face"))
+    markup.add(types.InlineKeyboardButton("Логгер", callback_data="menu_logger"))
+    markup.add(types.InlineKeyboardButton("Временная почта", callback_data="menu_tempmail"))
+    markup.add(types.InlineKeyboardButton("Назад", callback_data="back_main"))
     return markup
 
 def get_search_menu():
     markup = types.InlineKeyboardMarkup(row_width=2)
     buttons = [
-        ("📧 Почта", "search_email"),
-        ("🔹 Никнейм", "search_nick"),
-        ("📱 Номер", "search_phone"),
-        ("🌐 IP", "search_ip"),
-        ("🔑 VK ID", "search_vk"),
-        ("🏢 ИНН", "search_inn"),
-        ("📄 ЕГРЮЛ", "search_egrul"),
-        ("👤 ФИО", "search_fio"),
-        ("🚗 Авто", "search_car"),
-        ("🆔 СНИЛС", "search_snils"),
-        ("📍 Адрес", "search_address"),
-        ("🪪 Паспорт", "search_passport"),
-        ("🔐 Пароль", "search_password"),
-        ("🔗 Соц. сети", "search_social"),
-        ("Telegram ✈️", "search_fanstat"),
-        ("⬅️ Назад", "back_main")
+        ("Почта", "search_email"),
+        ("Никнейм", "search_nick"),
+        ("Номер", "search_phone"),
+        ("IP", "search_ip"),
+        ("VK ID", "search_vk"),
+        ("ИНН", "search_inn"),
+        ("ЕГРЮЛ", "search_egrul"),
+        ("ФИО", "search_fio"),
+        ("Авто", "search_car"),
+        ("СНИЛС", "search_snils"),
+        ("Адрес", "search_address"),
+        ("Паспорт", "search_passport"),
+        ("Пароль", "search_password"),
+        ("Соц. сети", "search_social"),
+        ("Telegram", "search_fanstat"),
+        ("Назад", "back_main")
     ]
-    for text, callback in buttons:
-        markup.add(types.InlineKeyboardButton(text, callback_data=callback))
+    for i in range(0, len(buttons), 2):
+        if i + 1 < len(buttons):
+            markup.row(
+                types.InlineKeyboardButton(buttons[i][0], callback_data=buttons[i][1]),
+                types.InlineKeyboardButton(buttons[i+1][0], callback_data=buttons[i+1][1])
+            )
+        else:
+            markup.row(types.InlineKeyboardButton(buttons[i][0], callback_data=buttons[i][1]))
     return markup
 
 def clear_ai_messages(chat_id):
@@ -1382,21 +1566,32 @@ def send_banner_with_menu(chat_id, status=None, clear_ai=False):
             pass
         del last_menu_msg[chat_id]
     
-    caption = "<b></b>\n\n"
-    if status:
-        caption += f"{status}\n\n"
-    caption += "Оковы сняты, выбирайте:"
+    banner_url = "https://i.ibb.co/QsWtP30/IMG-20260711-180652-126.jpg"
     
     try:
-        m = bot.send_photo(
+        from telebot import types as tg_types
+        link_preview = tg_types.LinkPreviewOptions(
+            url=banner_url,
+            is_disabled=False,
+            prefer_large_media=True,
+            show_above_text=True
+        )
+        
+        caption = "<blockquote>Выберите действие:</blockquote>"
+        
+        m = bot.send_message(
             chat_id,
-            BANNER_URL,
-            caption=caption,
+            caption,
             parse_mode="HTML",
-            reply_markup=get_main_menu()
+            reply_markup=get_main_menu(),
+            link_preview_options=link_preview
         )
         last_menu_msg[chat_id] = m.message_id
     except Exception:
+        caption = "Выберите действие:"
+        if status:
+            caption = f"{status}\n\n{caption}"
+        
         m = bot.send_message(
             chat_id,
             caption,
@@ -1415,7 +1610,7 @@ def _clear_pending_prompt(chat_id):
 
 def _send_report(message, title_str, report_type, filename_prefix, sections):
     if not sections:
-        bot.send_message(message.chat.id, "Данные не найдены" + SIGNATURE)
+        bot.send_message(message.chat.id, "Данные не найдены")
         send_banner_with_menu(message.chat.id)
         return
     html = create_html_report(title_str, sections, report_type)
@@ -1424,7 +1619,7 @@ def _send_report(message, title_str, report_type, filename_prefix, sections):
     with open(file, 'w', encoding='utf-8') as f:
         f.write(html)
     with open(file, 'rb') as f:
-        caption = f"Скачайте HTML-redactor если у вас возникли проьлемы с открытием.\n\n{SIGNATURE}"
+        caption = f"Скачайте HTML-redactor если у вас возникли проблемы с открытием."
         bot.send_document(message.chat.id, f, caption=caption)
     os.remove(file)
     chat_id = message.chat.id
@@ -1458,7 +1653,7 @@ def check_button_spam(user_id: int) -> bool:
 def process_face_search(message):
     chat_id = message.chat.id
     if not message.photo:
-        bot.send_message(chat_id, "❌ Это не фото. Отправьте изображение.")
+        bot.send_message(chat_id, "Это не фото. Отправьте изображение.")
         return
     
     file_id = message.photo[-1].file_id
@@ -1468,7 +1663,7 @@ def process_face_search(message):
     
     face_results_cache[chat_id] = {"image_bytes": image_bytes}
     
-    status_msg = bot.send_message(chat_id, "🔍 Ищу совпадения...")
+    status_msg = bot.send_message(chat_id, "Ищу совпадения...")
     
     def _do_search():
         try:
@@ -1483,7 +1678,7 @@ def process_face_search(message):
                 pass
             
             if not results:
-                bot.send_message(chat_id, "❌ Лица не найдены или нет совпадений." + SIGNATURE)
+                bot.send_message(chat_id, "Лица не найдены или нет совпадений.")
                 return
             
             face_results_cache[chat_id]["results"] = results
@@ -1494,14 +1689,14 @@ def process_face_search(message):
                 bot.delete_message(chat_id, status_msg.message_id)
             except:
                 pass
-            bot.send_message(chat_id, f"❌ Ошибка: {e}")
+            bot.send_message(chat_id, f"Ошибка: {e}")
     
     threading.Thread(target=_do_search, daemon=True).start()
 
 def send_face_page(chat_id, page):
     data = face_results_cache.get(chat_id)
     if not data or "results" not in data:
-        bot.send_message(chat_id, "❌ Результаты не найдены.")
+        bot.send_message(chat_id, "Результаты не найдены.")
         return
     
     results = data["results"]
@@ -1515,7 +1710,7 @@ def send_face_page(chat_id, page):
     end = min(start + per_page, total)
     page_results = results[start:end]
     
-    text = f"🔍 **Найдено {total} совпадений** (стр. {page+1}/{total_pages}):\n\n"
+    text = f"**Найдено {total} совпадений** (стр. {page+1}/{total_pages}):\n\n"
     for i, person in enumerate(page_results, start + 1):
         name = person.get('name', 'Неизвестно')
         similarity = person.get('similarity_rate', '0')
@@ -1524,12 +1719,10 @@ def send_face_page(chat_id, page):
         image_url = person.get('image_url', '')
         text += (
             f"{i}. **{name}** | {similarity}%\n"
-            f"   📍 {city}\n"
-            f"   🔗 [VK](https://vk.com/id{vk_id})\n"
-            f"   🖼️ [Фото]({image_url})\n\n"
+            f"   Город: {city}\n"
+            f"   Ссылка: [VK](https://vk.com/id{vk_id})\n"
+            f"   Фото: [Ссылка]({image_url})\n\n"
         )
-    
-    text += SIGNATURE
     
     markup = types.InlineKeyboardMarkup(row_width=2)
     buttons = []
@@ -1541,9 +1734,9 @@ def send_face_page(chat_id, page):
         buttons.append(types.InlineKeyboardButton("Вперед", callback_data=f"face_page_{page+1}"))
     
     if buttons:
-        markup.add(*buttons)
+        markup.row(*buttons)
     
-    markup.add(types.InlineKeyboardButton("Вернуться в меню", callback_data="face_back_to_menu"))
+    markup.row(types.InlineKeyboardButton("Вернуться в меню", callback_data="face_back_to_menu"))
     
     msg = bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup, disable_web_page_preview=True)
     face_results_cache[chat_id]["last_msg_id"] = msg.message_id
@@ -1555,52 +1748,41 @@ def process_fanstat(message):
     can, remaining = check_fanstat_limit(user_id)
     if not can:
         reset_time = get_fanstat_remaining_time(user_id)
-        bot.send_message(chat_id, f"❌ Лимит: 7 запросов в 10 часов.\n⏳ Следующий запрос доступен через {reset_time}.")
+        bot.send_message(chat_id, f"Лимит: 7 запросов в 10 часов.\nСледующий запрос доступен через {reset_time}.")
         return
 
-    user_id_or_username = message.text.strip()
-    if not user_id_or_username:
-        bot.send_message(chat_id, "❌ Введите Telegram ID или username.")
+    query = message.text.strip()
+    if not query:
+        bot.send_message(chat_id, "Введите Telegram ID или username.")
         return
 
-    status_msg = bot.send_message(chat_id, "🔍 Ищу информацию...")
+    status_msg = bot.send_message(chat_id, "Ищу информацию...")
 
     def _do_search():
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            result = tg_osint_get_transfer_history(query)
             
-            clean_query = user_id_or_username.lower().replace('id', '').strip()
-            result = loop.run_until_complete(search_telegram_user_id(clean_query))
-            loop.close()
-
-            if not result.get('success') or not result.get('data', {}).get('stats'):
+            if result is None:
                 bot.delete_message(chat_id, status_msg.message_id)
                 markup = types.InlineKeyboardMarkup()
-                markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_search"))
-                bot.send_message(chat_id, "❌ Пользователь не найден.", reply_markup=markup)
-                return
-
-            stats = result['data'].get('stats', {})
-            if not stats:
-                bot.delete_message(chat_id, status_msg.message_id)
-                markup = types.InlineKeyboardMarkup()
-                markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_search"))
-                bot.send_message(chat_id, "❌ Пользователь не найден.", reply_markup=markup)
+                markup.add(types.InlineKeyboardButton("Назад", callback_data="menu_search"))
+                bot.send_message(chat_id, "Пользователь не найден или API недоступен.", reply_markup=markup)
                 return
 
             bot.delete_message(chat_id, status_msg.message_id)
-
-            formatted = format_telegram_result_html(result['data'], user_id_or_username)
-            text = formatted + SIGNATURE
+            text = result
 
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_search"))
-            bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+            markup.add(types.InlineKeyboardButton("История имен", callback_data=f"tg_names_{query}"))
+            markup.add(types.InlineKeyboardButton("Назад", callback_data="menu_search"))
+            bot.send_message(chat_id, text, reply_markup=markup)
 
         except Exception as e:
-            bot.delete_message(chat_id, status_msg.message_id)
-            bot.send_message(chat_id, f"❌ Ошибка: {e}")
+            try:
+                bot.delete_message(chat_id, status_msg.message_id)
+            except:
+                pass
+            bot.send_message(chat_id, f"Ошибка: {e}")
 
     threading.Thread(target=_do_search, daemon=True).start()
 
@@ -1734,7 +1916,7 @@ def process_social(message):
     pending_prompt_msg[message.chat.id] = msg.message_id
     async def _do_async():
         if not SOCIAL_MODULE_AVAILABLE:
-            bot.send_message(message.chat.id, "Ошибка: модуль недоступен" + SIGNATURE)
+            bot.send_message(message.chat.id, "Ошибка: модуль недоступен")
             send_banner_with_menu(message.chat.id)
             return
         try:
@@ -1744,7 +1926,7 @@ def process_social(message):
             result = None
         if not result or 'error' in result:
             err = result.get('error', 'неизвестная ошибка') if result else 'нет данных'
-            bot.send_message(message.chat.id, f"Ошибка: {err}" + SIGNATURE)
+            bot.send_message(message.chat.id, f"Ошибка: {err}")
             send_banner_with_menu(message.chat.id)
             return
         status_map = {True: "есть", False: "нет", None: "неизвестно"}
@@ -1758,7 +1940,6 @@ def process_social(message):
             lines.append(f"\nКод страны: +{result['country_code']}")
         if result.get('line_type'):
             lines.append(f"Тип линии: {result['line_type']}")
-        lines.append(SIGNATURE)
         bot.send_message(message.chat.id, "\n".join(lines), parse_mode="HTML", disable_web_page_preview=True)
         send_banner_with_menu(message.chat.id)
     def _do():
@@ -1911,18 +2092,22 @@ def process_ai_message(message):
     wait_msg = bot.send_message(chat_id, '...')
     def _do():
         if user_id not in ai_sessions:
-            try: bot.delete_message(chat_id, wait_msg.message_id)
-            except: pass
+            try:
+                bot.delete_message(chat_id, wait_msg.message_id)
+            except:
+                pass
             return
-        reply = openrouter_ask(user_id, text)
+        protect_reply = openrouter_ask(user_id, text)
         try:
             bot.delete_message(chat_id, wait_msg.message_id)
         except Exception:
             pass
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🎨 Сгенерировать фото", callback_data=f"generate_photo_{user_id}_{chat_id}"))
-        markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_main"))
-        chunks = [reply[i:i+4000] for i in range(0, len(reply), 4000)]
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.row(
+            types.InlineKeyboardButton("Сгенерировать фото", callback_data=f"generate_photo_{user_id}_{chat_id}"),
+            types.InlineKeyboardButton("Назад", callback_data="back_main")
+        )
+        chunks = [protect_reply[i:i+4000] for i in range(0, len(protect_reply), 4000)]
         for i, chunk in enumerate(chunks):
             if i == len(chunks) - 1:
                 sent = bot.send_message(chat_id, chunk, parse_mode='HTML', reply_markup=markup)
@@ -1938,7 +2123,7 @@ def process_photo_prompt(message, user_id, chat_id):
     if not prompt:
         bot.send_message(chat_id, "Промпт не может быть пустым.")
         return
-    wait_msg = bot.send_message(chat_id, "🎨 Генерация фото... (до 60 секунд)")
+    wait_msg = bot.send_message(chat_id, "Генерация фото... (до 60 секунд)")
     def _do():
         img_data = generate_image(prompt)
         try:
@@ -1946,20 +2131,19 @@ def process_photo_prompt(message, user_id, chat_id):
         except Exception:
             pass
         if img_data:
-            sent = bot.send_photo(chat_id, img_data, caption=f"🎨 Фото по промпту:\n<code>{prompt}</code>", parse_mode="HTML")
+            sent = bot.send_photo(chat_id, img_data, caption=f"Фото по промпту:\n<code>{prompt}</code>", parse_mode="HTML")
             add_ai_message(chat_id, sent.message_id)
         else:
-            sent = bot.send_message(chat_id, "❌ Ошибка генерации фото. Попробуйте другой промпт.")
+            sent = bot.send_message(chat_id, "Ошибка генерации фото. Попробуйте другой промпт.")
             add_ai_message(chat_id, sent.message_id)
     _run_in_thread(_do)
 
-# ====== TEMP MAIL HANDLERS ======
 def process_tm_read(message, mail):
     chat_id = message.chat.id
     msg_id = message.text.strip()
     
     if not msg_id:
-        bot.send_message(chat_id, "❌ Неверный ID.")
+        bot.send_message(chat_id, "Неверный ID.")
         return
     
     mail_data = f"{mail['service']}:{mail['address']}:{mail['token']}"
@@ -1974,32 +2158,30 @@ def process_tm_read(message, mail):
             pass
         
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_tempmail"))
+        markup.add(types.InlineKeyboardButton("Назад", callback_data="menu_tempmail"))
         
         if content:
-            text = f"📄 Письмо:\n\n{content[:3500]}"
+            text = f"Письмо:\n\n{content[:3500]}"
             if len(content) > 3500:
                 text += "\n\n... (обрезано)"
             bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
         else:
-            bot.send_message(chat_id, "❌ Не удалось прочитать письмо.", reply_markup=markup)
+            bot.send_message(chat_id, "Не удалось прочитать письмо.", reply_markup=markup)
     _run_in_thread(_do)
 
-# ====== РАССЫЛКА ======
 def process_mailing(message):
     chat_id = message.chat.id
     admin_id = message.from_user.id
     
     if not is_admin(admin_id):
-        bot.send_message(chat_id, "❌ Нет доступа.")
+        bot.send_message(chat_id, "Нет доступа.")
         return
     
     text = message.text.strip()
     if not text:
-        bot.send_message(chat_id, "❌ Текст не может быть пустым.")
+        bot.send_message(chat_id, "Текст не может быть пустым.")
         return
     
-    # Собираем пользователей
     user_ids = set()
     try:
         for uid in user_requests.keys():
@@ -2013,18 +2195,18 @@ def process_mailing(message):
         for uid in pending_prompt_msg.keys():
             user_ids.add(uid)
     except Exception as e:
-        bot.send_message(chat_id, f"❌ Ошибка при сборе пользователей: {e}")
+        bot.send_message(chat_id, f"Ошибка при сборе пользователей: {e}")
         return
     
     if not user_ids:
-        bot.send_message(chat_id, "❌ Нет пользователей для рассылки.")
+        bot.send_message(chat_id, "Нет пользователей для рассылки.")
         return
     
     confirm_msg = bot.send_message(
         chat_id,
-        f"📨 Начинаю рассылку для {len(user_ids)} пользователей.\n"
+        f"Начинаю рассылку для {len(user_ids)} пользователей.\n"
         f"Текст:\n{text[:200]}{'...' if len(text) > 200 else ''}\n\n"
-        f"⏳ Это может занять некоторое время..."
+        f"Это может занять некоторое время..."
     )
     
     def _do_mailing():
@@ -2038,17 +2220,16 @@ def process_mailing(message):
             except Exception:
                 fail += 1
         bot.edit_message_text(
-            f"✅ Рассылка завершена!\n"
-            f"📤 Отправлено: {success}\n"
-            f"❌ Не доставлено: {fail}\n"
-            f"👥 Всего: {len(user_ids)}",
+            f"Рассылка завершена!\n"
+            f"Отправлено: {success}\n"
+            f"Не доставлено: {fail}\n"
+            f"Всего: {len(user_ids)}",
             chat_id,
             confirm_msg.message_id
         )
     
     threading.Thread(target=_do_mailing, daemon=True).start()
 
-# ====== CALLBACK HANDLER ======
 @bot.callback_query_handler(func=lambda call: call.data == "check_sub")
 def handle_check_subscription(call):
     user_id = call.from_user.id
@@ -2062,9 +2243,9 @@ def handle_check_subscription(call):
         if chat_id in pending_sub_msg:
             del pending_sub_msg[chat_id]
         send_banner_with_menu(chat_id)
-        bot.answer_callback_query(call.id, "✅ Подписка подтверждена!")
+        bot.answer_callback_query(call.id, "Подписка подтверждена!")
     else:
-        bot.answer_callback_query(call.id, "❌ Вы ещё не подписались на канал!", show_alert=True)
+        bot.answer_callback_query(call.id, "Вы ещё не подписались на канал!", show_alert=True)
 
 @bot.message_handler(func=lambda message: message.text and message.text.startswith('.'))
 @require_subscription
@@ -2076,7 +2257,7 @@ def handle_dot_commands(message):
     query = parts[1] if len(parts) > 1 else ''
     
     if not query:
-        bot.send_message(chat_id, "❌ Введите запрос после команды.\nПример: `.phone 79289999999`")
+        bot.send_message(chat_id, "Введите запрос после команды.\nПример: `.phone 79289999999`")
         return
     
     original_text = message.text
@@ -2087,7 +2268,7 @@ def handle_dot_commands(message):
     elif cmd == '.fio':
         process_fio(message)
     else:
-        bot.send_message(chat_id, f"❌ Доступные команды: .phone, .fio")
+        bot.send_message(chat_id, f"Доступные команды: .phone, .fio")
     
     message.text = original_text
 
@@ -2100,7 +2281,7 @@ def send_welcome(message):
     if is_user_blocked(user_id, username):
         bot.send_message(
             OWNER_ID,
-            f"🚫 Заблокированный пользователь пытался запустить бота:\n"
+            f"Заблокированный пользователь пытался запустить бота:\n"
             f"ID: {user_id}\n"
             f"Username: @{username if username else 'None'}"
         )
@@ -2117,14 +2298,18 @@ def send_welcome(message):
 def show_admin_panel(message):
     user_id = message.from_user.id
     if is_admin(user_id):
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.row(types.InlineKeyboardButton("Выдать запросы", callback_data="admin_give_requests"))
-        markup.row(types.InlineKeyboardButton("Забанить", callback_data="admin_ban_user"))
-        markup.row(types.InlineKeyboardButton("Разбанить", callback_data="admin_unban_user"))
-        markup.row(types.InlineKeyboardButton("Список забаненных", callback_data="admin_banned_list"))
-        markup.row(types.InlineKeyboardButton("Статистика", callback_data="admin_stats"))
-        markup.row(types.InlineKeyboardButton("📨 Рассылка", callback_data="admin_mailing"))
-        markup.row(types.InlineKeyboardButton("Закрыть", callback_data="back_main"))
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        b1 = types.InlineKeyboardButton("Выдать запросы", callback_data="admin_give_requests")
+        b2 = types.InlineKeyboardButton("Забанить", callback_data="admin_ban_user")
+        b3 = types.InlineKeyboardButton("Разбанить", callback_data="admin_unban_user")
+        b4 = types.InlineKeyboardButton("Список забаненных", callback_data="admin_banned_list")
+        b5 = types.InlineKeyboardButton("Статистика", callback_data="admin_stats")
+        b6 = types.InlineKeyboardButton("Рассылка", callback_data="admin_mailing")
+        b7 = types.InlineKeyboardButton("Закрыть", callback_data="back_main")
+        markup.row(b1, b2)
+        markup.row(b3, b4)
+        markup.row(b5, b6)
+        markup.row(b7)
         bot.send_message(message.chat.id, "Админ панель", reply_markup=markup)
     else:
         bot.send_message(message.chat.id, "Нет доступа")
@@ -2184,7 +2369,7 @@ def _slash_ask(message, prompt, handler):
     if is_user_blocked(user_id, username):
         bot.send_message(
             OWNER_ID,
-            f"🚫 Заблокированный пользователь пытался использовать команду:\n"
+            f"Заблокированный пользователь пытался использовать команду:\n"
             f"ID: {user_id}\n"
             f"Username: @{username if username else 'None'}"
         )
@@ -2202,22 +2387,22 @@ def handle_callback(call):
     username = call.from_user.username
     
     if check_button_spam(user_id):
-        bot.answer_callback_query(call.id, "⏳ Не спамь кнопки!", show_alert=False)
+        bot.answer_callback_query(call.id, "Не спамь кнопки!", show_alert=False)
         return
     
     if is_user_blocked(user_id, username):
         bot.send_message(
             OWNER_ID,
-            f"🚫 Заблокированный пользователь нажал кнопку:\n"
+            f"Заблокированный пользователь нажал кнопку:\n"
             f"ID: {user_id}\n"
             f"Username: @{username if username else 'None'}\n"
             f"Callback: {call.data}"
         )
-        bot.answer_callback_query(call.id)
+        bot.answer_callback_query(call.id, show_alert=False)
         return
     
     if user_id in banned_users:
-        bot.answer_callback_query(call.id)
+        bot.answer_callback_query(call.id, show_alert=False)
         return
 
     if call.data == "back_main":
@@ -2227,16 +2412,16 @@ def handle_callback(call):
             del ai_histories[user_id]
         clear_ai_messages(chat_id)
         bot.clear_step_handler_by_chat_id(chat_id)
-        try:
-            bot.delete_message(chat_id, call.message.message_id)
-        except:
-            pass
         if chat_id in pending_prompt_msg:
             try:
                 bot.delete_message(chat_id, pending_prompt_msg[chat_id])
             except:
                 pass
             del pending_prompt_msg[chat_id]
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except:
+            pass
         send_banner_with_menu(chat_id)
     elif call.data == "menu_enter":
         chat_id = call.message.chat.id
@@ -2256,12 +2441,12 @@ def handle_callback(call):
         last_menu_msg[chat_id] = m.message_id
     elif call.data == "menu_ai":
         chat_id = call.message.chat.id
+        ai_sessions.add(user_id)
         try:
             bot.delete_message(chat_id, call.message.message_id)
         except:
             pass
-        ai_sessions.add(user_id)
-        sent = bot.send_message(chat_id, "🧠 Искуственный интелект Router активирован.\nЗадайте вопрос:")
+        sent = bot.send_message(chat_id, "Искусственный интеллект Router активирован.\nЗадайте вопрос:")
         add_ai_message(chat_id, sent.message_id)
         bot.register_next_step_handler(call.message, process_ai_message)
     elif call.data == "menu_face":
@@ -2272,7 +2457,7 @@ def handle_callback(call):
             bot.delete_message(chat_id, call.message.message_id)
         except:
             pass
-        msg = bot.send_message(chat_id, "📸 Отправьте фото для поиска по лицу.")
+        msg = bot.send_message(chat_id, "Отправьте фото для поиска по лицу.")
         bot.register_next_step_handler(msg, process_face_search)
     elif call.data == "face_back_to_menu":
         chat_id = call.message.chat.id
@@ -2283,7 +2468,7 @@ def handle_callback(call):
         if chat_id in face_results_cache:
             face_results_cache.pop(chat_id)
         send_banner_with_menu(chat_id)
-        bot.answer_callback_query(call.id)
+        bot.answer_callback_query(call.id, show_alert=False)
     elif call.data.startswith("face_page_"):
         page = int(call.data.replace("face_page_", ""))
         chat_id = call.message.chat.id
@@ -2292,7 +2477,7 @@ def handle_callback(call):
         except:
             pass
         send_face_page(chat_id, page)
-        bot.answer_callback_query(call.id)
+        bot.answer_callback_query(call.id, show_alert=False)
     elif call.data == "menu_logger":
         chat_id = call.message.chat.id
         try:
@@ -2309,388 +2494,275 @@ def handle_callback(call):
                 if link and token:
                     view_url = f"{API_LOGGER_VIEW}{token}"
                     text = (
-                        f"🎭 Ваш логгер создан!\n\n"
-                        f"🔗 Ссылка для отправки:\n{link}\n\n"
-                        f"📊 Посмотреть логи:\n{view_url}\n"
-                        f"{SIGNATURE}"
+                        f"Ваш логгер создан!\n\n"
+                        f"Ссылка для отправки:\n{link}\n\n"
+                        f"Посмотреть логи:\n{view_url}"
                     )
                     markup = types.InlineKeyboardMarkup()
-                    markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_enter"))
+                    markup.add(types.InlineKeyboardButton("Назад", callback_data="menu_enter"))
                     bot.send_message(chat_id, text, reply_markup=markup)
                 else:
-                    bot.send_message(chat_id, "❌ Ошибка: не получены link или token")
+                    bot.send_message(chat_id, "Ошибка: не получены link или token")
             else:
-                bot.send_message(chat_id, f"❌ Ошибка API: {r.status_code}")
+                bot.send_message(chat_id, f"Ошибка API: {r.status_code}")
         except Exception as e:
-            bot.send_message(chat_id, f"❌ Ошибка при создании логгера: {e}")
-        bot.answer_callback_query(call.id)
+            bot.send_message(chat_id, f"Ошибка при создании логгера: {e}")
+        bot.answer_callback_query(call.id, show_alert=False)
     elif call.data == "admin_mailing" and is_admin(user_id):
         chat_id = call.message.chat.id
-        msg = bot.send_message(chat_id, "📨 Введите текст для рассылки (можно с HTML-разметкой):")
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except:
+            pass
+        msg = bot.send_message(chat_id, "Введите текст для рассылки (можно с HTML-разметкой):")
         bot.register_next_step_handler(msg, process_mailing)
-        bot.answer_callback_query(call.id)
+        bot.answer_callback_query(call.id, show_alert=False)
     elif call.data == "search_fanstat":
         chat_id = call.message.chat.id
         try:
             bot.delete_message(chat_id, call.message.message_id)
         except:
             pass
-        msg = bot.send_message(chat_id, "✈️ Введите Telegram ID или @username:")
+        msg = bot.send_message(chat_id, "Введите Telegram ID или @username для поиска:")
         bot.register_next_step_handler(msg, process_fanstat)
+    elif call.data.startswith("tg_names_"):
+        query = call.data.replace("tg_names_", "")
+        chat_id = call.message.chat.id
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except:
+            pass
+        status_msg = bot.send_message(chat_id, "Загружаю историю имен...")
+        def _load_names():
+            try:
+                result = tg_osint_get_name_history(query)
+                if result is None:
+                    bot.delete_message(chat_id, status_msg.message_id)
+                    bot.send_message(chat_id, "История не найдена.")
+                    return
+                bot.delete_message(chat_id, status_msg.message_id)
+                text = result
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("Назад", callback_data="menu_search"))
+                framed_text = f"<blockquote>{text}</blockquote>"
+                bot.send_message(chat_id, framed_text, reply_markup=markup, parse_mode="HTML")
+            except Exception as e:
+                try:
+                    bot.delete_message(chat_id, status_msg.message_id)
+                except:
+                    pass
+                bot.send_message(chat_id, f"Ошибка: {e}")
+        threading.Thread(target=_load_names, daemon=True).start()
+        bot.answer_callback_query(call.id, show_alert=False)
     elif call.data.startswith("generate_photo_"):
         parts = call.data.split("_")
         user_id = int(parts[2])
         chat_id = int(parts[3])
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except:
+            pass
         msg = bot.send_message(chat_id, "Введите промпт для генерации фото:")
         bot.register_next_step_handler(msg, lambda m: process_photo_prompt(m, user_id, chat_id))
-        bot.answer_callback_query(call.id)
+        bot.answer_callback_query(call.id, show_alert=False)
     elif call.data == "menu_profile":
         chat_id = call.message.chat.id
         try:
             bot.delete_message(chat_id, call.message.message_id)
         except:
             pass
-        profile_text = f"👤 Профиль\n\nID: {user_id}\nЗапросов: безлимит\n\nПоддержка — @CLTaobot"
+        profile_text = f"Профиль\n\nID: {user_id}\nЗапросов: безлимит\n\nПоддержка — @CLTaobot"
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_main"))
+        markup.add(types.InlineKeyboardButton("Назад", callback_data="back_main"))
         m = bot.send_message(chat_id, profile_text, reply_markup=markup)
         last_menu_msg[chat_id] = m.message_id
+        bot.answer_callback_query(call.id, show_alert=False)
     elif call.data == "menu_subscription":
         chat_id = call.message.chat.id
         try:
             bot.delete_message(chat_id, call.message.message_id)
         except:
             pass
-        user = bot.get_chat_member(chat_id, user_id).user
-        nickname = user.first_name or "User"
-        sub_text = f"💎 Подписка\n\nВы {nickname} свободны!\nПодписок не требуется, возможности — бесконечны."
+        username = call.from_user.username if call.from_user.username else " Пользователь"
+        subscription_text = f"Подписка\n\n{username} какая подписка? Вы свободны."
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="back_main"))
-        m = bot.send_message(chat_id, sub_text, reply_markup=markup)
+        markup.add(types.InlineKeyboardButton("Назад", callback_data="back_main"))
+        m = bot.send_message(chat_id, subscription_text, reply_markup=markup)
         last_menu_msg[chat_id] = m.message_id
-    elif call.data == "admin_give_requests" and is_admin(user_id):
-        msg = bot.send_message(call.message.chat.id, "Введите ID пользователя и количество дней (через пробел):")
-        bot.register_next_step_handler(msg, process_give_requests)
-    elif call.data == "admin_ban_user" and is_admin(user_id):
-        msg = bot.send_message(call.message.chat.id, "Введите ID пользователя для блокировки:")
-        bot.register_next_step_handler(msg, process_ban_user)
-    elif call.data == "admin_unban_user" and is_admin(user_id):
-        msg = bot.send_message(call.message.chat.id, "Введите ID пользователя для разблокировки:")
-        bot.register_next_step_handler(msg, process_unban_user)
-    elif call.data == "admin_banned_list" and is_admin(user_id):
-        banned = get_banned_users()
-        if banned:
-            text = "Забаненные:\n" + "\n".join([f"- {uid}" for uid in banned])
-            bot.send_message(call.message.chat.id, text)
-        else:
-            bot.send_message(call.message.chat.id, "Нет забаненных")
-    elif call.data == "admin_stats" and is_admin(user_id):
-        text = f"Статистика:\nВсего пользователей: {len(user_requests)}\nЗабаненных: {len(get_banned_users())}"
-        bot.send_message(call.message.chat.id, text)
-    elif call.data == "search_email":
-        msg = bot.send_message(call.message.chat.id, "Введите email:")
-        pending_prompt_msg[call.message.chat.id] = msg.message_id
-        bot.register_next_step_handler(msg, process_email)
-    elif call.data == "search_nick":
-        msg = bot.send_message(call.message.chat.id, "Введите никнейм:")
-        pending_prompt_msg[call.message.chat.id] = msg.message_id
-        bot.register_next_step_handler(msg, process_nick)
-    elif call.data == "search_phone":
-        msg = bot.send_message(call.message.chat.id, "Введите номер телефона:")
-        pending_prompt_msg[call.message.chat.id] = msg.message_id
-        bot.register_next_step_handler(msg, process_phone)
-    elif call.data == "search_ip":
-        msg = bot.send_message(call.message.chat.id, "Введите IP адрес:")
-        pending_prompt_msg[call.message.chat.id] = msg.message_id
-        bot.register_next_step_handler(msg, process_ip)
-    elif call.data == "search_vk":
-        msg = bot.send_message(call.message.chat.id, "Введите VK ID:")
-        pending_prompt_msg[call.message.chat.id] = msg.message_id
-        bot.register_next_step_handler(msg, process_vk)
-    elif call.data == "search_social":
-        msg = bot.send_message(call.message.chat.id, "Введите номер телефона для проверки мессенджеров:")
-        pending_prompt_msg[call.message.chat.id] = msg.message_id
-        bot.register_next_step_handler(msg, process_social)
-    elif call.data == "search_inn":
-        msg = bot.send_message(call.message.chat.id, "Введите ИНН:")
-        pending_prompt_msg[call.message.chat.id] = msg.message_id
-        bot.register_next_step_handler(msg, process_inn)
-    elif call.data == "search_egrul":
-        msg = bot.send_message(call.message.chat.id, "Введите ИНН для ЕГРЮЛ:")
-        pending_prompt_msg[call.message.chat.id] = msg.message_id
-        bot.register_next_step_handler(msg, process_egrul)
-    elif call.data == "search_fio":
-        msg = bot.send_message(call.message.chat.id, "Введите ФИО:")
-        pending_prompt_msg[call.message.chat.id] = msg.message_id
-        bot.register_next_step_handler(msg, process_fio)
-    elif call.data == "search_car":
-        msg = bot.send_message(call.message.chat.id, "Введите номер автомобиля:")
-        pending_prompt_msg[call.message.chat.id] = msg.message_id
-        bot.register_next_step_handler(msg, process_car)
-    elif call.data == "search_snils":
-        msg = bot.send_message(call.message.chat.id, "Введите СНИЛС:")
-        pending_prompt_msg[call.message.chat.id] = msg.message_id
-        bot.register_next_step_handler(msg, process_snils)
-    elif call.data == "search_address":
-        msg = bot.send_message(call.message.chat.id, "Введите адрес:")
-        pending_prompt_msg[call.message.chat.id] = msg.message_id
-        bot.register_next_step_handler(msg, process_address)
-    elif call.data == "search_passport":
-        msg = bot.send_message(call.message.chat.id, "Введите номер паспорта:")
-        pending_prompt_msg[call.message.chat.id] = msg.message_id
-        bot.register_next_step_handler(msg, process_passport)
-    elif call.data == "search_password":
-        msg = bot.send_message(call.message.chat.id, "Введите пароль для поиска:")
-        pending_prompt_msg[call.message.chat.id] = msg.message_id
-        bot.register_next_step_handler(msg, process_password)
+        bot.answer_callback_query(call.id, show_alert=False)
     elif call.data == "menu_tempmail":
         chat_id = call.message.chat.id
         try:
             bot.delete_message(chat_id, call.message.message_id)
         except:
             pass
-        
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(
-            types.InlineKeyboardButton("📧 Создать почту", callback_data="tm_create"),
-            types.InlineKeyboardButton("📩 Проверить ящик", callback_data="tm_check"),
-            types.InlineKeyboardButton("📖 Прочитать письмо", callback_data="tm_read"),
-            types.InlineKeyboardButton("🗑️ Удалить почту", callback_data="tm_delete")
-        )
-        markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_enter"))
-        
-        m = bot.send_message(chat_id, "✉️ Временная почта:", reply_markup=markup)
-        last_menu_msg[chat_id] = m.message_id
-
-    elif call.data == "tm_create":
+        msg = bot.send_message(chat_id, "Выберите действие с временной почтой:", 
+                              reply_markup=types.InlineKeyboardMarkup().add(
+                                  types.InlineKeyboardButton("Создать почту", callback_data="tempmail_create"),
+                                  types.InlineKeyboardButton("Назад", callback_data="back_main")
+                              ))
+        last_menu_msg[chat_id] = msg.message_id
+        bot.answer_callback_query(call.id, show_alert=False)
+    elif call.data == "tempmail_create":
         chat_id = call.message.chat.id
         try:
             bot.delete_message(chat_id, call.message.message_id)
         except:
             pass
-        
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(
-            types.InlineKeyboardButton("Mail.tm", callback_data="tm_mailtm"),
-            types.InlineKeyboardButton("Guerrilla Mail", callback_data="tm_guerrilla"),
-            types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_tempmail")
-        )
-        
-        m = bot.send_message(chat_id, "Выберите сервис:", reply_markup=markup)
-        last_menu_msg[chat_id] = m.message_id
-
-    elif call.data == "tm_mailtm":
-        chat_id = call.message.chat.id
-        try:
-            bot.delete_message(chat_id, call.message.message_id)
-        except:
-            pass
-        
-        msg = bot.send_message(chat_id, "Создаю почту Mail.tm...")
-        
-        def _do():
-            result = asyncio.run(generate_mailtm())
+        status_msg = bot.send_message(chat_id, "Создаю временную почту...")
+        def _create_tempmail():
             try:
-                bot.delete_message(chat_id, msg.message_id)
-            except:
-                pass
-            if result:
-                parts = result.split(":")
-                save_mail(parts[0], parts[1], parts[2])
-                update_stats("create")
-                markup = types.InlineKeyboardMarkup()
-                markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_tempmail"))
-                bot.send_message(
-                    chat_id,
-                    f"✅ Почта создана:\n`{parts[1]}`\n\n"
-                    f"📌 Используйте `Проверить ящик` для просмотра писем.",
-                    parse_mode="Markdown",
-                    reply_markup=markup
-                )
-            else:
-                bot.send_message(chat_id, "❌ Ошибка создания. Попробуйте позже.")
-        _run_in_thread(_do)
-
-    elif call.data == "tm_guerrilla":
+                import asyncio
+                mail_data = asyncio.run(generate_mailtm())
+                if not mail_data:
+                    mail_data = asyncio.run(generate_guerrilla())
+                
+                if mail_data:
+                    save_mail(mail_data.split(":")[0], mail_data.split(":")[1], mail_data.split(":")[2])
+                    bot.delete_message(chat_id, status_msg.message_id)
+                    result_text = f"Почта создана!\n\nАдрес: {mail_data.split(':')[1]}"
+                    markup = types.InlineKeyboardMarkup()
+                    markup.add(types.InlineKeyboardButton("Назад", callback_data="menu_tempmail"))
+                    bot.send_message(chat_id, result_text, reply_markup=markup)
+                else:
+                    bot.delete_message(chat_id, status_msg.message_id)
+                    bot.send_message(chat_id, "Ошибка при создании почты")
+            except Exception as e:
+                try:
+                    bot.delete_message(chat_id, status_msg.message_id)
+                except:
+                    pass
+                bot.send_message(chat_id, f"Ошибка: {e}")
+        
+        threading.Thread(target=_create_tempmail, daemon=True).start()
+        bot.answer_callback_query(call.id, show_alert=False)
+        
+    elif call.data == "search_email":
         chat_id = call.message.chat.id
         try:
             bot.delete_message(chat_id, call.message.message_id)
         except:
             pass
-        
-        msg = bot.send_message(chat_id, "Создаю почту Guerrilla...")
-        
-        def _do():
-            result = asyncio.run(generate_guerrilla())
-            try:
-                bot.delete_message(chat_id, msg.message_id)
-            except:
-                pass
-            if result:
-                parts = result.split(":")
-                save_mail(parts[0], parts[1], parts[2])
-                update_stats("create")
-                markup = types.InlineKeyboardMarkup()
-                markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_tempmail"))
-                bot.send_message(
-                    chat_id,
-                    f"✅ Почта создана:\n`{parts[1]}`\n\n"
-                    f"📌 Используйте `Проверить ящик` для просмотра писем.",
-                    parse_mode="Markdown",
-                    reply_markup=markup
-                )
-            else:
-                bot.send_message(chat_id, "❌ Ошибка создания. Попробуйте позже.")
-        _run_in_thread(_do)
-
-    elif call.data == "tm_check":
+        msg = bot.send_message(chat_id, "Введите email для поиска:")
+        bot.register_next_step_handler(msg, process_email)
+        bot.answer_callback_query(call.id, show_alert=False)
+    elif call.data == "search_nick":
         chat_id = call.message.chat.id
-        mails = get_mails()
-        
-        if not mails:
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_tempmail"))
-            bot.send_message(chat_id, "📭 Нет сохранённых почт. Сначала создайте!", reply_markup=markup)
-            return
-        
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        for mail in mails:
-            label = mail['address'][:25] + "..." if len(mail['address']) > 25 else mail['address']
-            markup.add(types.InlineKeyboardButton(label, callback_data=f"tm_check_{mail['id']}"))
-        markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_tempmail"))
-        
         try:
             bot.delete_message(chat_id, call.message.message_id)
         except:
             pass
-        m = bot.send_message(chat_id, "Выберите почту для проверки:", reply_markup=markup)
-        last_menu_msg[chat_id] = m.message_id
-
-    elif call.data.startswith("tm_check_"):
-        mail_id = int(call.data.split("_")[2])
+        msg = bot.send_message(chat_id, "Введите никнейм для поиска:")
+        bot.register_next_step_handler(msg, process_nick)
+        bot.answer_callback_query(call.id, show_alert=False)
+    elif call.data == "search_phone":
         chat_id = call.message.chat.id
-        mails = get_mails()
-        mail = next((m for m in mails if m["id"] == mail_id), None)
-        
-        if not mail:
-            bot.send_message(chat_id, "❌ Почта не найдена.")
-            return
-        
         try:
             bot.delete_message(chat_id, call.message.message_id)
         except:
             pass
-        
-        msg = bot.send_message(chat_id, f"Проверяю {mail['address']}...")
-        mail_data = f"{mail['service']}:{mail['address']}:{mail['token']}"
-        
-        def _do():
-            messages = asyncio.run(check_messages(mail_data))
-            update_stats("check")
-            try:
-                bot.delete_message(chat_id, msg.message_id)
-            except:
-                pass
-            
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_tempmail"))
-            
-            if not messages:
-                bot.send_message(chat_id, f"📭 Нет писем для {mail['address']}.", reply_markup=markup)
-                return
-            
-            text = f"📨 Входящие для {mail['address']}:\n\n"
-            for i, msg_data in enumerate(messages[:10], 1):
-                text += f"{i}. От: {msg_data['from']}\n   Тема: {msg_data['subject']}\n   ID: `{msg_data['id']}`\n\n"
-            
-            if len(messages) > 10:
-                text += f"... и ещё {len(messages)-10} писем."
-            
-            bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
-        _run_in_thread(_do)
-
-    elif call.data == "tm_read":
+        msg = bot.send_message(chat_id, "Введите номер телефона для поиска:")
+        bot.register_next_step_handler(msg, process_phone)
+        bot.answer_callback_query(call.id, show_alert=False)
+    elif call.data == "search_ip":
         chat_id = call.message.chat.id
-        mails = get_mails()
-        
-        if not mails:
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_tempmail"))
-            bot.send_message(chat_id, "📭 Нет сохранённых почт. Сначала создайте!", reply_markup=markup)
-            return
-        
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        for mail in mails:
-            label = mail['address'][:25] + "..." if len(mail['address']) > 25 else mail['address']
-            markup.add(types.InlineKeyboardButton(label, callback_data=f"tm_read_select_{mail['id']}"))
-        markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_tempmail"))
-        
         try:
             bot.delete_message(chat_id, call.message.message_id)
         except:
             pass
-        m = bot.send_message(chat_id, "Выберите почту, затем введите ID письма:", reply_markup=markup)
-        last_menu_msg[chat_id] = m.message_id
-
-    elif call.data.startswith("tm_read_select_"):
-        mail_id = int(call.data.split("_")[3])
+        msg = bot.send_message(chat_id, "Введите IP-адрес для поиска:")
+        bot.register_next_step_handler(msg, process_ip)
+        bot.answer_callback_query(call.id, show_alert=False)
+    elif call.data == "search_vk":
         chat_id = call.message.chat.id
-        mails = get_mails()
-        mail = next((m for m in mails if m["id"] == mail_id), None)
-        
-        if not mail:
-            bot.send_message(chat_id, "❌ Почта не найдена.")
-            return
-        
         try:
             bot.delete_message(chat_id, call.message.message_id)
         except:
             pass
-        
-        msg = bot.send_message(chat_id, f"Введите ID письма для {mail['address']}:\n(из списка при проверке)")
-        bot.register_next_step_handler(msg, lambda m: process_tm_read(m, mail))
-
-    elif call.data == "tm_delete":
+        msg = bot.send_message(chat_id, "Введите VK ID для поиска:")
+        bot.register_next_step_handler(msg, process_vk)
+        bot.answer_callback_query(call.id, show_alert=False)
+    elif call.data == "search_inn":
         chat_id = call.message.chat.id
-        mails = get_mails()
-        
-        if not mails:
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_tempmail"))
-            bot.send_message(chat_id, "📭 Нет почт для удаления.", reply_markup=markup)
-            return
-        
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        for mail in mails:
-            label = mail['address'][:25] + "..." if len(mail['address']) > 25 else mail['address']
-            markup.add(types.InlineKeyboardButton(f"🗑️ {label}", callback_data=f"tm_delete_do_{mail['id']}"))
-        markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_tempmail"))
-        
         try:
             bot.delete_message(chat_id, call.message.message_id)
         except:
             pass
-        m = bot.send_message(chat_id, "Выберите почту для удаления:", reply_markup=markup)
-        last_menu_msg[chat_id] = m.message_id
-
-    elif call.data.startswith("tm_delete_do_"):
-        mail_id = int(call.data.split("_")[3])
+        msg = bot.send_message(chat_id, "Введите ИНН для поиска:")
+        bot.register_next_step_handler(msg, process_inn)
+        bot.answer_callback_query(call.id, show_alert=False)
+    elif call.data == "search_egrul":
         chat_id = call.message.chat.id
-        delete_mail(mail_id)
-        update_stats("delete")
-        
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_tempmail"))
-        
         try:
             bot.delete_message(chat_id, call.message.message_id)
         except:
             pass
-        
-        bot.send_message(chat_id, "✅ Почта удалена.", reply_markup=markup)
+        msg = bot.send_message(chat_id, "Введите ЕГРЮЛ для поиска:")
+        bot.register_next_step_handler(msg, process_egrul)
+        bot.answer_callback_query(call.id, show_alert=False)
+    elif call.data == "search_fio":
+        chat_id = call.message.chat.id
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except:
+            pass
+        msg = bot.send_message(chat_id, "Введите ФИО для поиска:")
+        bot.register_next_step_handler(msg, process_fio)
+        bot.answer_callback_query(call.id, show_alert=False)
+    elif call.data == "search_car":
+        chat_id = call.message.chat.id
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except:
+            pass
+        msg = bot.send_message(chat_id, "Введите номер авто для поиска:")
+        bot.register_next_step_handler(msg, process_car)
+        bot.answer_callback_query(call.id, show_alert=False)
+    elif call.data == "search_snils":
+        chat_id = call.message.chat.id
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except:
+            pass
+        msg = bot.send_message(chat_id, "Введите СНИЛС для поиска:")
+        bot.register_next_step_handler(msg, process_snils)
+        bot.answer_callback_query(call.id, show_alert=False)
+    elif call.data == "search_address":
+        chat_id = call.message.chat.id
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except:
+            pass
+        msg = bot.send_message(chat_id, "Введите адрес для поиска:")
+        bot.register_next_step_handler(msg, process_address)
+        bot.answer_callback_query(call.id, show_alert=False)
+    elif call.data == "search_passport":
+        chat_id = call.message.chat.id
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except:
+            pass
+        msg = bot.send_message(chat_id, "Введите серию и номер паспорта для поиска:")
+        bot.register_next_step_handler(msg, process_passport)
+        bot.answer_callback_query(call.id, show_alert=False)
+    elif call.data == "search_password":
+        chat_id = call.message.chat.id
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except:
+            pass
+        msg = bot.send_message(chat_id, "Введите пароль для поиска:")
+        bot.register_next_step_handler(msg, process_password)
+        bot.answer_callback_query(call.id, show_alert=False)
+    elif call.data == "search_social":
+        chat_id = call.message.chat.id
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+        except:
+            pass
+        msg = bot.send_message(chat_id, "Введите номер телефона для проверки соц. сетей:")
+        bot.register_next_step_handler(msg, process_social)
+        bot.answer_callback_query(call.id, show_alert=False)
 
-    bot.answer_callback_query(call.id)
-
-if __name__ == "__main__":
-    print("Router Bot started!")
-    bot.infinity_polling(allowed_updates=["message", "callback_query"])
+if __name__ == '__main__':
+    bot.infinity_polling()
