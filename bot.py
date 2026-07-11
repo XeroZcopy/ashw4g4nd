@@ -22,7 +22,7 @@ import httpx
 import requests
 from bs4 import BeautifulSoup
 
-BOT_TOKEN_CFG = "8530922925:AAHns9naUuQEW10l1giWUGUYiCmkiA6yvYg"
+BOT_TOKEN_CFG = ""
 ADMIN_IDS_CFG = [8557521484, 6138292855, 5277564584]
 OWNER_ID_CFG = 6138292855
 
