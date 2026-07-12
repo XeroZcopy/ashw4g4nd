@@ -1,4 +1,5 @@
-telebot
+aiogram
+telethon
 httpx
 requests
 beautifulsoup4
