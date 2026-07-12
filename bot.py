@@ -3,11 +3,10 @@ import logging
 import json
 import os
 import re
-import sqlite3
 import sys
 import time
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
 from telethon import TelegramClient
@@ -15,8 +14,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import (
     Message, CallbackQuery,
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    BotCommand
+    InlineKeyboardMarkup, InlineKeyboardButton
 )
 
 # =====================================================
@@ -24,15 +22,11 @@ from aiogram.types import (
 # =====================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ACCOUNTS_FILE = os.path.join(BASE_DIR, 'accounts.json')
-DB_FILE = os.path.join(BASE_DIR, 'umbrella.db')
 
 GATEWAY_TOKEN = '8705134820:AAFMJY_4WYgW06AHw7hRYHYQYRJXdhTmtkY'
 SPONSOR_CHANNEL = '@RouterSCH'
-ADMIN_ID = 5277564584
 
 BOT_SJ = 'sjgdfj0ghjdhjjegtjjebot'
-BOT_CLONE = 'lolsas_clone_bot'
-BOT_MAIN = 'lolsbot'
 DS_TOKEN = 'kDJcZkqUS2u6vZCdOMoimHcv5fqQuI7y'
 DS_URL = 'https://api.depsearch.sbs/quest={phone}&token=' + DS_TOKEN
 DS_TRASH = {'1win', '1win_2', '1win_2024', '1win_2025'}
@@ -68,76 +62,6 @@ _fh.setFormatter(logging.Formatter(
 logger.addHandler(_fh)
 
 # =====================================================
-# DATABASE
-# =====================================================
-def get_db():
-    conn = sqlite3.connect(DB_FILE, timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    return conn
-
-def init_db():
-    c = get_db().cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        first_seen TEXT,
-        is_subscribed INTEGER DEFAULT 0
-    )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS mirrors (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        bot_token TEXT UNIQUE,
-        bot_username TEXT,
-        created_by INTEGER,
-        created_at TEXT,
-        is_active INTEGER DEFAULT 1
-    )""")
-    get_db().commit()
-    logger.info("DB ready")
-
-def db_exec(sql, params=(), one=False):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(sql, params)
-    r = c.fetchone() if one else c.fetchall()
-    conn.commit()
-    conn.close()
-    return r
-
-def add_user(uid):
-    db_exec("INSERT OR IGNORE INTO users (user_id, first_seen, is_subscribed) VALUES (?, ?, 0)",
-            (uid, datetime.now().isoformat()))
-
-def get_user(uid):
-    r = db_exec("SELECT user_id, first_seen, is_subscribed FROM users WHERE user_id=?", (uid,), one=True)
-    if r:
-        return dict(zip(['user_id', 'first_seen', 'is_subscribed'], r))
-    return None
-
-def set_subscribed(uid, val=1):
-    add_user(uid)
-    db_exec("UPDATE users SET is_subscribed=? WHERE user_id=?", (val, uid))
-
-def is_subscribed(uid):
-    u = get_user(uid)
-    return u and u['is_subscribed'] == 1
-
-def get_all_uids():
-    return [r[0] for r in db_exec("SELECT user_id FROM users")]
-
-def add_mirror(token, username, by):
-    db_exec("INSERT OR IGNORE INTO mirrors (bot_token, bot_username, created_by, created_at, is_active) VALUES (?,?,?,?,1)",
-            (token, username, by, datetime.now().isoformat()))
-
-def get_active_mirrors():
-    return db_exec("SELECT id, bot_token, bot_username, created_by FROM mirrors WHERE is_active=1 ORDER BY id DESC LIMIT 2")
-
-def get_all_mirrors():
-    return db_exec("SELECT id, bot_token, bot_username, created_by, created_at FROM mirrors WHERE is_active=1 ORDER BY id DESC")
-
-def del_mirror(mid):
-    db_exec("UPDATE mirrors SET is_active=0 WHERE id=?", (mid,))
-
-# =====================================================
 # REGEX
 # =====================================================
 RE = {
@@ -149,16 +73,6 @@ RE = {
     'pb': re.compile(r'Телефонные книги\s*\(\d+\):\s*(.+?)(?:\n\n|\n[🧑💬⚠])', re.S),
     'vk': re.compile(r'•\s*(.+?)\s*\((https?://vk\.com/[^\s)]+)\)'),
     'ok': re.compile(r'•\s*(.+?)\s*\((https?://ok\.ru/[^\s)]+)\)'),
-    'ls_uid': re.compile(r'user_id[:\s]+`?(\d+)`?'),
-    'ls_geo': re.compile(r'geo[:\s]+(.+)'),
-    'ls_name_sec': re.compile(r'^name$'),
-    'ls_uname_sec': re.compile(r'^username$'),
-    'ls_name': re.compile(r'\d+[:\s]+(.+)'),
-    'ls_uname': re.compile(r'@(\w+)'),
-    'ls_fmsg': re.compile(r'first_msg[:\s]+(.+)'),
-    'ls_reg': re.compile(r'registration[:\s]+(.+)'),
-    'ls_ban': re.compile(r'lols_ban[:\s]+(.+)'),
-    'ls_stats': re.compile(r'stats[:\s]+(.+)'),
     'strip_stars': re.compile(r'\*'),
     'strip_bt': re.compile(r'`'),
     'strip_footer': re.compile(r"\n*by\s+@\S+\s*$"),
@@ -181,7 +95,6 @@ class RL:
             self.ts.append(time.time())
 
 sj_rl = RL(5, 1.0)
-ls_rl = RL(5, 1.0)
 ds_rl = RL(2, 1.0)
 
 # =====================================================
@@ -274,6 +187,25 @@ async def deepsearch(query):
 # =====================================================
 # PARSERS
 # =====================================================
+def parse_sj(text):
+    c = clean_md(text)
+    d = {'phone': None, 'operator': None, 'region': None, 'country': None,
+         'telegram': [], 'books': [], 'vk': [], 'ok': []}
+    d['phone'] = _rx('phone', c)
+    d['operator'] = _rx('operator', c)
+    d['region'] = _rx('region', c)
+    d['country'] = _rx('country', c)
+    for u, uid in RE['tg'].findall(c):
+        d['telegram'].append({'username': u, 'id': uid})
+    pb = RE['pb'].search(c)
+    if pb:
+        raw = re.sub(r'\s+', ' ', pb.group(1)).strip()
+        d['books'] = [n.strip() for n in raw.split(',') if n.strip() and len(n.strip()) > 1]
+    for n, u in RE['vk'].findall(c):
+        d['vk'].append({'name': re.sub(r'\s*\d{2}\.\d{2}\.\d{4}', '', n).strip(), 'url': u.strip()})
+    for n, u in RE['ok'].findall(c):
+        d['ok'].append({'name': n.strip(), 'url': u.strip()})
+    return d
 
 # =====================================================
 # TELETHON SEARCH
@@ -336,25 +268,6 @@ async def _sj_search(c, ent, query, mode):
     r = await _poll_res(c, ent, to=30)
     return r.text if r else None
 
-async def _ls_search(c, em, ec, q):
-    await c.send_message(em, '/start')
-    await asyncio.sleep(0.3)
-    await c.send_message(ec, '/start osin')
-    await asyncio.sleep(0.5)
-    await c.send_message(ec, q)
-    for _ in range(3):
-        await asyncio.sleep(2)
-        for m in await c.get_messages(ec, limit=5):
-            if m.buttons:
-                for row in m.buttons:
-                    for b in row:
-                        if b.text and 'Повторить' in b.text:
-                            await _fc(m, b); await asyncio.sleep(3); break
-        for m in await c.get_messages(ec, limit=5):
-            if m.text and ('user_id' in m.text or 'channel' in m.text or 'bot' in m.text):
-                return m.text
-    return None
-
 async def try_sj(query, mode):
     for a in accs_by_role('sj'):
         try:
@@ -365,20 +278,6 @@ async def try_sj(query, mode):
             if r: return r
         except Exception as e:
             logger.warning(f"sj {a['name']}: {e}")
-            try: await c.disconnect()
-            except: pass
-    return None
-
-async def try_lolsas(query):
-    for a in accs_by_role('lolsas'):
-        try:
-            await ls_rl.get()
-            c = mk_client(a); await c.start()
-            r = await _ls_search(c, await c.get_input_entity(BOT_MAIN), await c.get_input_entity(BOT_CLONE), query)
-            await c.disconnect()
-            if r: return r
-        except Exception as e:
-            logger.warning(f"ls {a['name']}: {e}")
             try: await c.disconnect()
             except: pass
     return None
@@ -405,61 +304,39 @@ def cparse(fn, text):
 
 async def do_search(mode, query):
     t0 = time.time()
-    sj = ls = ds = None
-    rid = None
+    sj = ds = None
 
     if mode == 'phone':
         sj = await try_sj(query, 'phone')
         ds = await asyncio.get_event_loop().run_in_executor(None, deepsearch, query)
     elif mode == 'id':
         sj = await try_sj(query, 'id')
-        ls = await try_lolsas(query)
         if sj:
             p = cparse(parse_sj, sj)
             if p.get('phone'):
                 ds = await asyncio.get_event_loop().run_in_executor(None, deepsearch, p['phone'])
     elif mode == 'username':
-        ls = await try_lolsas(query)
-        lp = cparse(parse_lolsas, ls) if ls else {}
-        rid = lp.get('user_id')
-        if rid:
-            sj = await try_sj(rid, 'id')
-            if sj:
-                p = cparse(parse_sj, sj)
-                if p.get('phone'):
-                    ds = await asyncio.get_event_loop().run_in_executor(None, deepsearch, p['phone'])
-    elif mode == 'fio':
-        ds = await asyncio.get_event_loop().run_in_executor(None, deepsearch, query)
-    elif mode == 'email':
-        ds = await asyncio.get_event_loop().run_in_executor(None, deepsearch, query)
-    elif mode == 'auto':
+        sj = await try_sj(query, 'id')
+        if sj:
+            p = cparse(parse_sj, sj)
+            if p.get('phone'):
+                ds = await asyncio.get_event_loop().run_in_executor(None, deepsearch, p['phone'])
+    elif mode == 'fio' or mode == 'email' or mode == 'auto':
         ds = await asyncio.get_event_loop().run_in_executor(None, deepsearch, query)
 
-    lp = cparse(parse_lolsas, ls) if ls else {}
     sp = cparse(parse_sj, sj) if sj else {}
 
     res = {
         'display': query,
-        'id': lp.get('user_id') or query,
-        'usernames': lp.get('usernames', []),
-        'first_msg': lp.get('first_msg'),
-        'registration': lp.get('registration'),
-        'geo': lp.get('geo'),
-        'ban_status': lp.get('lols_ban', ''),
+        'id': query,
+        'usernames': [query.lstrip('@')] if mode == 'username' else [],
         'phone': sp.get('phone'), 'operator': sp.get('operator'),
         'region': sp.get('region'), 'country': sp.get('country'),
         'phonebook': sp.get('books', []),
         'vk': sp.get('vk', []), 'ok': sp.get('ok', []),
         'telegram': sp.get('telegram'),
-        'names': lp.get('names', []),
-        'stats': lp.get('stats'),
         'emails': [], 'fios': []
     }
-
-    if mode == 'id' and lp.get('usernames'):
-        res['display'] = '@' + lp['usernames'][0]
-    elif mode == 'username' and not query.startswith('@'):
-        res['display'] = '@' + query
 
     if ds and 'results' in ds:
         ems, fs = [], []
@@ -481,14 +358,7 @@ def fmt_result(d, q):
     if not r or (isinstance(r, dict) and not r.get('id') and not r.get('phone')):
         return '<b>Ничего не найдено</b>'
     L = [f'<b>🔭 Результат на {r.get("display", q)}</b>', '',
-         f'👨‍💻 Айди: <code>{r.get("id", q)}</code>']
-    if r.get('usernames'): L.append(f'💬 Юзернейм: <b>@{r["usernames"][0]}</b>')
-    if r.get('first_msg'): L.append(f'🕒 Первое сообщение: <i>{_esc(r["first_msg"])}</i>')
-    if r.get('registration'): L.append(f'📅 Регистрация: <i>{_esc(r["registration"])}</i>')
-    if r.get('geo'): L.append(f'🌐 Geo: {_esc(r["geo"])}')
-    ban = r.get('ban_status', '')
-    if 'не заблокирован' in ban: L.append('✅ Репутация: <b>Чистый</b>')
-    elif 'заблокирован' in ban: L.append('❌ Репутация: <b>Заблокирован</b>')
+         f'👨‍💻 Запрос: <code>{r.get("id", q)}</code>']
     L.append('')
     if r.get('phone'):
         L.append(f'📱 Телефон: <code>{r["phone"]}</code>')
@@ -499,14 +369,6 @@ def fmt_result(d, q):
     if r.get('phonebook'):
         n = len(r['phonebook']); L.append(f'<b>💾 Телефонная книга ({n}):</b>')
         for i, nm in enumerate(r['phonebook'][:15]): L.append(f'{_t(i,n,15)} <code>{_esc(nm)}</code>')
-        L.append('')
-    if r.get('names'):
-        n = len(r['names']); L.append(f'<b>ℹ️ История имён ({n}):</b>')
-        for i, nm in enumerate(r['names'][:10]): L.append(f'{_t(i,n,10)} {_esc(nm)}')
-        L.append('')
-    if r.get('usernames') and len(r['usernames']) > 1:
-        n = len(r['usernames']); L.append(f'<b>🔄 История юзеров ({n}):</b>')
-        for i, u in enumerate(r['usernames'][:10]): L.append(f'{_t(i,n,10)} <code>@{u}</code>')
         L.append('')
     if r.get('vk'):
         n = len(r['vk']); L.append(f'<b>🌐 ВКонтакте ({n}):</b>')
@@ -530,7 +392,6 @@ def fmt_result(d, q):
         for i, e in enumerate(r['emails'][:5]): L.append(f'{_t(i,n,5)} <code>{e}</code>')
         L.append('')
     if r.get('fios'): L.append(f'👤 ФИО: <b><code>{_esc(r["fios"][0])}</code></b>'); L.append('')
-    if r.get('stats'): L.append(f'📊 <i>{_esc(r["stats"])}</i>'); L.append('')
     L.append('📱 Найдено через <b>Umbrella Search</b>')
     return '\n'.join(L)
 
@@ -563,47 +424,9 @@ def kb_back_main():
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back")]
     ])
 
-def kb_subscribe():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Подписаться", url=f"https://t.me/{SPONSOR_CHANNEL.lstrip('@')}")],
-        [InlineKeyboardButton(text="✅ Проверить", callback_data="check_sub")]
-    ])
-
-def kb_gateway_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 Поиск", url="https://t.me/umbrella_search_bot?start=search")],
-        [InlineKeyboardButton(text="🪞 Зеркала", callback_data="mirrors")],
-        [InlineKeyboardButton(text="➕ Создать зеркало", callback_data="create_mirror")]
-    ])
-
-def kb_mirrors(mirrors):
-    buttons = []
-    for m in mirrors:
-        mid, token, username, created_by = m
-        uname = username or 'bot'
-        buttons.append([InlineKeyboardButton(text=f"🪞 @{uname}", url=f"https://t.me/{uname}")])
-    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_gateway")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def kb_admin():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="a_stats"),
-         InlineKeyboardButton(text="🪞 Все зеркала", callback_data="a_all_mirrors")],
-        [InlineKeyboardButton(text="➕ Создать зеркало", callback_data="create_mirror")]
-    ])
-
 # =====================================================
 # TEXTS
 # =====================================================
-T_WELCOME_SUB = """🔐 <b>Добро пожаловать в Umbrella Search</b>
-
-Для использования бота необходимо подписаться на наши каналы:
-
-📢 <b>{channel}</b>
-
-Нажмите «Подписаться» и перейдите на канал.
-После подписки нажмите «Проверить»."""
-
 T_MAIN_MENU = """🏠 <b>Вы находитесь в главном меню</b>
 
 > By Umbrella Search"""
@@ -612,17 +435,12 @@ T_EXAMPLES = """ℹ️ <b>Основные примеры использован
 
 👤 Для ФИО:
 Фамилия Имя Отчество
-Фамилия Имя Отчество Дата рождения
 
 📱 Для контактных данных:
 Номер в международном формате
 
 📧 Для электронной почты:
 Полный любой электронный адрес
-
-🚔 Для транспортных средств:
-Автомобильный номер
-VIN-код
 
 👁‍🗨 Для телеграм профиля:
 @логин
@@ -634,166 +452,24 @@ T_SEARCH_PROMPT = """🔍 <b>Отправьте запрос для поиска
 📧 <code>@username</code> — Telegram
 🆔 <code>1234567890</code> — Telegram ID
 👤 <code>ФИО</code> — фамилия имя отчество
-📧 <code>email@mail.ru</code> — электронная почта
-🚔 <code>А123БВ777</code> — номер авто"""
+📧 <code>email@mail.ru</code> — электронная почта"""
 
 T_SEARCH_LOCK = '<b>🔍 Поиск выполняется</b>\n\nДождитесь завершения текущего поиска.'
 T_NOFMT = '<b>❌ Не удалось распознать формат</b>\n\nОтправьте номер, @username, Telegram ID, ФИО, email или номер авто.'
 T_ERR = '<b>❌ Ошибка</b>\n\nПопробуйте позже.'
 T_SEARCH = '<b>🔍 Поиск...</b>\n\nПожалуйста подождите.'
-T_SUB_OK = '<b>✅ Подписка подтверждена!</b>\n\nДобро пожаловать в Umbrella Search.'
-T_SUB_FAIL = '<b>❌ Вы не подписались</b>\n\nПодпишитесь на канал и попробуйте снова.'
-T_MIRRORS = '<b>🪞 Активные зеркала</b>\n\nНажмите на зеркало для перехода:'
-T_MIRROR_CREATED = '<b>✅ Зеркало создано!</b>\n\nЗапуск: <code>python bot.py {token}</code>'
-T_TOKEN_PROMPT = '<b>➕ Создать зеркало</b>\n\nОтправьте токен нового бота:\n<code>123:ABC</code>'
 
 # =====================================================
-# GATEWAY BOT (подписка + зеркала)
+# BOT CORE
 # =====================================================
-async def run_gateway():
+async def main():
     bot = Bot(token=GATEWAY_TOKEN)
-    dp = Dispatcher()
-    admin_state = {}
-
-    @dp.message(Command("start"))
-    async def cmd_start(m: Message):
-        uid = m.from_user.id
-        add_user(uid)
-        logger.info(f"gateway /start {uid} @{m.from_user.username}")
-
-        if uid == ADMIN_ID:
-            await m.answer(T_MAIN_MENU, parse_mode="HTML", reply_markup=kb_admin())
-            return
-
-        if is_subscribed(uid):
-            await m.answer(T_MAIN_MENU, parse_mode="HTML", reply_markup=kb_gateway_menu())
-        else:
-            await m.answer(
-                T_WELCOME_SUB.format(channel=SPONSOR_CHANNEL),
-                parse_mode="HTML", reply_markup=kb_subscribe()
-            )
-
-    @dp.callback_query(F.data == "check_sub")
-    async def cb_check_sub(cb: CallbackQuery):
-        uid = cb.from_user.id
-        try:
-            member = await bot.get_chat_member(SPONSOR_CHANNEL, uid)
-            if member.status in ('member', 'administrator', 'creator'):
-                set_subscribed(uid)
-                await cb.message.edit_text(T_SUB_OK, parse_mode="HTML")
-                await asyncio.sleep(1)
-                await cb.message.edit_text(T_MAIN_MENU, parse_mode="HTML", reply_markup=kb_gateway_menu())
-            else:
-                await cb.answer(T_SUB_FAIL, show_alert=True)
-        except Exception as e:
-            logger.warning(f"sub check: {e}")
-            set_subscribed(uid)
-            await cb.message.edit_text(T_SUB_OK, parse_mode="HTML")
-            await asyncio.sleep(1)
-            await cb.message.edit_text(T_MAIN_MENU, parse_mode="HTML", reply_markup=kb_gateway_menu())
-        await cb.answer()
-
-    @dp.callback_query(F.data == "back_gateway")
-    async def cb_back_gateway(cb: CallbackQuery):
-        uid = cb.from_user.id
-        if uid == ADMIN_ID:
-            await cb.message.edit_text(T_MAIN_MENU, parse_mode="HTML", reply_markup=kb_admin())
-        else:
-            await cb.message.edit_text(T_MAIN_MENU, parse_mode="HTML", reply_markup=kb_gateway_menu())
-        await cb.answer()
-
-    @dp.callback_query(F.data == "mirrors")
-    async def cb_mirrors(cb: CallbackQuery):
-        uid = cb.from_user.id
-        mirrors = get_active_mirrors()
-        if mirrors:
-            txt = T_MIRRORS
-            await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=kb_mirrors(mirrors))
-        else:
-            await cb.message.edit_text("🪞 <b>Активных зеркал нет</b>\n\nСоздайте зеркало или обратитесь к администратору.", parse_mode="HTML", reply_markup=kb_back_gateway())
-        await cb.answer()
-
-    @dp.callback_query(F.data == "create_mirror")
-    async def cb_create_mirror(cb: CallbackQuery):
-        uid = cb.from_user.id
-        if uid != ADMIN_ID:
-            await cb.answer("⛔ Только для админа", show_alert=True)
-            return
-        await cb.message.edit_text(T_TOKEN_PROMPT, parse_mode="HTML")
-        admin_state[uid] = 'cmirror'
-        await cb.answer()
-
-    @dp.callback_query(F.data == "a_stats")
-    async def cb_stats(cb: CallbackQuery):
-        if cb.from_user.id != ADMIN_ID:
-            await cb.answer(); return
-        users = db_exec("SELECT COUNT(*) FROM users", one=True)[0]
-        mirrors = db_exec("SELECT COUNT(*) FROM mirrors WHERE is_active=1", one=True)[0]
-        subs = db_exec("SELECT COUNT(*) FROM users WHERE is_subscribed=1", one=True)[0]
-        await cb.message.edit_text(
-            f"📊 <b>Статистика Umbrella</b>\n\n"
-            f"👥 Пользователей: {users}\n"
-            f"✅ Подписано: {subs}\n"
-            f"🪞 Зеркал: {mirrors}",
-            parse_mode="HTML", reply_markup=kb_admin()
-        )
-        await cb.answer()
-
-    @dp.callback_query(F.data == "a_all_mirrors")
-    async def cb_all_mirrors(cb: CallbackQuery):
-        if cb.from_user.id != ADMIN_ID:
-            await cb.answer(); return
-        ms = get_all_mirrors()
-        txt = "🪞 <b>Все зеркала</b>\n\n"
-        if ms:
-            for r in ms:
-                mid, token, username, created_by, created_at = r
-                status = "🟢" if r[4] else "🔴"
-                txt += f"{status} @{username or '?'} | ID: {mid}\n"
-        else:
-            txt += "Нет зеркал."
-        await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=kb_admin())
-        await cb.answer()
-
-    @dp.message(F.text)
-    async def on_text(m: Message):
-        uid = m.from_user.id
-        txt = m.text.strip()
-
-        if uid == ADMIN_ID and uid in admin_state:
-            st = admin_state.pop(uid)
-            if st == 'cmirror':
-                tkn = txt.strip()
-                if ':' in tkn and len(tkn) > 30:
-                    try:
-                        test = Bot(token=tkn)
-                        me = await test.get_me()
-                        add_mirror(tkn, me.username, uid)
-                        await m.answer(T_MIRROR_CREATED.format(token=tkn), parse_mode="HTML")
-                        await test.session.close()
-                    except Exception as e:
-                        await m.answer(f"❌ {e}")
-                else:
-                    await m.answer("❌ Неверный токен")
-                return
-
-    logger.info("Gateway bot starting...")
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
-
-# =====================================================
-# MIRROR BOT (поиск)
-# =====================================================
-async def run_mirror(token: str):
-    bot = Bot(token=token)
     dp = Dispatcher()
     search_locks = {}
 
     @dp.message(Command("start"))
     async def cmd_start(m: Message):
-        uid = m.from_user.id
-        add_user(uid)
-        logger.info(f"mirror /start {uid} @{m.from_user.username}")
+        logger.info(f"start {m.from_user.id} @{m.from_user.username}")
         await m.answer(T_MAIN_MENU, parse_mode="HTML", reply_markup=kb_main_menu())
 
     @dp.callback_query(F.data == "back")
@@ -860,19 +536,9 @@ async def run_mirror(token: str):
 
         search_locks[uid] = False
 
-    logger.info(f"Mirror bot starting... {token[:15]}...")
+    logger.info("Bot starting...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
-
-# =====================================================
-# ENTRY
-# =====================================================
-async def main():
-    init_db()
-    if len(sys.argv) > 1:
-        await run_mirror(sys.argv[1])
-    else:
-        await run_gateway()
 
 if __name__ == '__main__':
     asyncio.run(main())
