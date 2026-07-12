@@ -23,8 +23,8 @@ from aiogram.types import (
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ACCOUNTS_FILE = os.path.join(BASE_DIR, 'accounts.json')
 
-GATEWAY_TOKEN = '8705134820:AAFMJY_4WYgW06AHw7hRYHYQYRJXdhTmtkY'
-SPONSOR_CHANNEL = '@RouterSCH'
+GATEWAY_TOKEN = 'токен бота'
+SPONSOR_CHANNEL = '@bothkm'
 
 BOT_SJ = 'sjgdfj0ghjdhjjegtjjebot'
 DS_TOKEN = 'kDJcZkqUS2u6vZCdOMoimHcv5fqQuI7y'
@@ -244,8 +244,11 @@ async def _sj_search(c, ent, query, mode):
     except: pass
     menu = await _poll_btn(c, ent, 'Искать', to=8)
     if not menu: return None
+    
+    # Кликаем нужную кнопку в зависимости от режима
     kw = 'Номер телефона' if mode == 'phone' else 'Telegram'
     await _fc(menu, _fb(menu, 'Искать'))
+    
     svc, oid, otxt = None, menu.id, menu.text
     end = time.time() + 8
     while time.time() < end:
@@ -311,17 +314,9 @@ async def do_search(mode, query):
         ds = await asyncio.get_event_loop().run_in_executor(None, deepsearch, query)
     elif mode == 'id':
         sj = await try_sj(query, 'id')
-        if sj:
-            p = cparse(parse_sj, sj)
-            if p.get('phone'):
-                ds = await asyncio.get_event_loop().run_in_executor(None, deepsearch, p['phone'])
     elif mode == 'username':
-        sj = await try_sj(query, 'id')
-        if sj:
-            p = cparse(parse_sj, sj)
-            if p.get('phone'):
-                ds = await asyncio.get_event_loop().run_in_executor(None, deepsearch, p['phone'])
-    elif mode == 'fio' or mode == 'email' or mode == 'auto':
+        sj = await try_sj(query, 'username')
+    elif mode in ('fio', 'email', 'auto'):
         ds = await asyncio.get_event_loop().run_in_executor(None, deepsearch, query)
 
     sp = cparse(parse_sj, sj) if sj else {}
@@ -355,7 +350,7 @@ async def do_search(mode, query):
 # =====================================================
 def fmt_result(d, q):
     r = d
-    if not r or (isinstance(r, dict) and not r.get('id') and not r.get('phone')):
+    if not r or (isinstance(r, dict) and not r.get('id') and not r.get('phone') and not r.get('phonebook') and not r.get('fios')):
         return '<b>Ничего не найдено</b>'
     L = [f'<b>🔭 Результат на {r.get("display", q)}</b>', '',
          f'👨‍💻 Запрос: <code>{r.get("id", q)}</code>']
