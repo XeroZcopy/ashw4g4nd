@@ -18,18 +18,19 @@ from aiogram.types import (
 )
 
 # =====================================================
-# CONFIG
+# CONFIG (НАСТРОЙКА)
 # =====================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ACCOUNTS_FILE = os.path.join(BASE_DIR, 'accounts.json')
 
-GATEWAY_TOKEN = '8705134820:AAFMJY_4WYgW06AHw7hRYHYQYRJXdhTmtkY'
-SPONSOR_CHANNEL = '@RouterSCH'
+GATEWAY_TOKEN = 'СЮДА_ТОКЕН_ТВОЕГО_ГЛАВНОГО_БОТА'
+SPONSOR_CHANNEL = '@bothkm'
 
 BOT_SJ = 'sjgdfj0ghjdhjjegtjjebot'
 DS_TOKEN = 'kDJcZkqUS2u6vZCdOMoimHcv5fqQuI7y'
 DS_URL = 'https://api.depsearch.sbs/quest={phone}&token=' + DS_TOKEN
 DS_TRASH = {'1win', '1win_2', '1win_2024', '1win_2025'}
+
 SJ_MARKERS = [
     'Телефон:', 'Оператор:', 'Регион:', 'Страна:',
     'Телефонные книги', 'VK', 'Одноклассники',
@@ -38,7 +39,7 @@ SJ_MARKERS = [
 ]
 
 # =====================================================
-# LOGGING
+# LOGGING (ЛОГИРОВАНИЕ)
 # =====================================================
 LOG_DIR = os.path.join(BASE_DIR, 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -62,7 +63,7 @@ _fh.setFormatter(logging.Formatter(
 logger.addHandler(_fh)
 
 # =====================================================
-# REGEX
+# REGEX (РЕГУЛЯРНЫЕ ВЫРАЖЕНИЯ ИЗ ОРИГИНАЛА)
 # =====================================================
 RE = {
     'phone': re.compile(r'Телефон:\s*(.+)'),
@@ -98,7 +99,7 @@ sj_rl = RL(5, 1.0)
 ds_rl = RL(2, 1.0)
 
 # =====================================================
-# ACCOUNTS (Telethon)
+# ЗАГРУЗКА АККАУНТОВ ИЗ ACCOUNTS.JSON
 # =====================================================
 _acc_cache = None
 _acc_time = 0
@@ -114,17 +115,17 @@ def load_accs():
             _acc_time = now
             return _acc_cache
     except Exception as e:
-        logger.error(f"accounts: {e}")
+        logger.error(f"Ошибка загрузки accounts.json: {e}")
         return _acc_cache or []
 
 def accs_by_role(role):
     return [a for a in load_accs() if a.get('role') == role and a.get('status') == 'active']
 
 def mk_client(a):
-    return TelegramClient(a['session'], a['api_id'], a['api_hash'])
+    return TelegramClient(os.path.join(BASE_DIR, a['session']), a['api_id'], a['api_hash'])
 
 # =====================================================
-# UTILS
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # =====================================================
 def _rx(key, text):
     m = RE[key].search(text)
@@ -160,7 +161,7 @@ def is_id(t):
     return t.isdigit() and 5 <= len(t) <= 15
 
 def is_uname(t):
-    return t.startswith('@') and len(t) > 1
+    return t.startswith('@') or (t.isalnum() and len(t) >= 5 and not t.isdigit())
 
 def _esc(t):
     return str(t).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
@@ -169,7 +170,7 @@ def _t(i, tot, lim):
     return '└' if i == min(tot, lim) - 1 else '├'
 
 # =====================================================
-# DEEPSEARCH
+# DEEPSEARCH API
 # =====================================================
 async def deepsearch(query):
     phone = RE['phone_clean'].sub('', query)
@@ -181,34 +182,44 @@ async def deepsearch(query):
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read().decode('utf-8'))
     except Exception as e:
-        logger.warning(f"ds: {e}")
+        logger.warning(f"Ошибка DeepSearch: {e}")
         return None
 
 # =====================================================
-# PARSERS
+# ПОЛНЫЙ ПАРСИНГ ОТВЕТА ОТ СЛИТОГО БОТА (SJ)
 # =====================================================
 def parse_sj(text):
     c = clean_md(text)
     d = {'phone': None, 'operator': None, 'region': None, 'country': None,
          'telegram': [], 'books': [], 'vk': [], 'ok': []}
+    
     d['phone'] = _rx('phone', c)
     d['operator'] = _rx('operator', c)
     d['region'] = _rx('region', c)
     d['country'] = _rx('country', c)
+    
+    # Парсим Telegram аккаунты связанных лиц/сессий
     for u, uid in RE['tg'].findall(c):
         d['telegram'].append({'username': u, 'id': uid})
+        
+    # Парсим телефонные книги (имена)
     pb = RE['pb'].search(c)
     if pb:
         raw = re.sub(r'\s+', ' ', pb.group(1)).strip()
         d['books'] = [n.strip() for n in raw.split(',') if n.strip() and len(n.strip()) > 1]
+        
+    # Парсим ссылки VK
     for n, u in RE['vk'].findall(c):
         d['vk'].append({'name': re.sub(r'\s*\d{2}\.\d{2}\.\d{4}', '', n).strip(), 'url': u.strip()})
+        
+    # Парсим ссылки OK
     for n, u in RE['ok'].findall(c):
         d['ok'].append({'name': n.strip(), 'url': u.strip()})
+        
     return d
 
 # =====================================================
-# TELETHON SEARCH
+# ВЗАИМОДЕЙСТВИЕ С BOT_SJ ЧЕРЕЗ TELETHON
 # =====================================================
 async def _poll_btn(c, ent, kw, to=8):
     end = time.time() + to
@@ -233,6 +244,7 @@ async def _poll_res(c, ent, to=20):
     return None
 
 async def _sj_search(c, ent, query, mode):
+    # Сбрасываем старые зависшие инпуты в SJ
     try:
         for m in await c.get_messages(ent, limit=3):
             if m.buttons and _fb(m, 'Отменить'):
@@ -240,12 +252,14 @@ async def _sj_search(c, ent, query, mode):
                 await asyncio.sleep(0.1)
                 break
     except: pass
+    
     try: await c.send_message(ent, '/start')
     except: pass
+    
     menu = await _poll_btn(c, ent, 'Искать', to=8)
     if not menu: return None
     
-    # Кликаем нужную кнопку в зависимости от режима
+    # Выбираем режим на основе типа данных
     kw = 'Номер телефона' if mode == 'phone' else 'Telegram'
     await _fc(menu, _fb(menu, 'Искать'))
     
@@ -264,9 +278,12 @@ async def _sj_search(c, ent, query, mode):
                     svc = m; break
         except: pass
         if svc: break
+        
     if not svc or not _fb(svc, kw): return None
     await _fc(svc, _fb(svc, kw))
     await asyncio.sleep(0.1)
+    
+    # Отправляем сам запрос
     await c.send_message(ent, query)
     r = await _poll_res(c, ent, to=30)
     return r.text if r else None
@@ -280,13 +297,13 @@ async def try_sj(query, mode):
             await c.disconnect()
             if r: return r
         except Exception as e:
-            logger.warning(f"sj {a['name']}: {e}")
+            logger.warning(f"Ошибка на аккаунте {a['name']}: {e}")
             try: await c.disconnect()
             except: pass
     return None
 
 # =====================================================
-# CACHE + SEARCH
+# ОБРАБОТКА ПОИСКА И СЛИЯНИЕ ДАННЫХ
 # =====================================================
 _pc = {}
 _PCT = 300
@@ -319,6 +336,7 @@ async def do_search(mode, query):
     elif mode in ('fio', 'email', 'auto'):
         ds = await asyncio.get_event_loop().run_in_executor(None, deepsearch, query)
 
+    # Парсим сырой текстовый ответ от SJ в структурированный вид
     sp = cparse(parse_sj, sj) if sj else {}
 
     res = {
@@ -346,47 +364,70 @@ async def do_search(mode, query):
     return res, time.time() - t0
 
 # =====================================================
-# FORMAT RESULT
+# КРАСИВОЕ ОФОРМЛЕНИЕ РЕЗУЛЬТАТОВ ДЛЯ ЮЗЕРА
 # =====================================================
 def fmt_result(d, q):
     r = d
     if not r or (isinstance(r, dict) and not r.get('id') and not r.get('phone') and not r.get('phonebook') and not r.get('fios')):
         return '<b>Ничего не найдено</b>'
+        
     L = [f'<b>🔭 Результат на {r.get("display", q)}</b>', '',
          f'👨‍💻 Запрос: <code>{r.get("id", q)}</code>']
     L.append('')
+    
     if r.get('phone'):
         L.append(f'📱 Телефон: <code>{r["phone"]}</code>')
         if r.get('operator'): L.append(f'├ Оператор: <i>{_esc(r["operator"])}</i>')
         if r.get('region'): L.append(f'├ Регион: <i>{_esc(r["region"])}</i>')
         if r.get('country'): L.append(f'└ Страна: <i>{_esc(r["country"])}</i>')
         L.append('')
+        
     if r.get('phonebook'):
-        n = len(r['phonebook']); L.append(f'<b>💾 Телефонная книга ({n}):</b>')
-        for i, nm in enumerate(r['phonebook'][:15]): L.append(f'{_t(i,n,15)} <code>{_esc(nm)}</code>')
+        n = len(r['phonebook'])
+        L.append(f'<b>💾 Телефонная книга ({n}):</b>')
+        for i, nm in enumerate(r['phonebook'][:15]): 
+            L.append(f'{_t(i,n,15)} <code>{_esc(nm)}</code>')
         L.append('')
+        
     if r.get('vk'):
-        n = len(r['vk']); L.append(f'<b>🌐 ВКонтакте ({n}):</b>')
-        for i, p in enumerate(r['vk'][:5]): L.append(f'{_t(i,n,5)} <a href="{p.get("url","")}">{_esc(p["name"])}</a>')
+        n = len(r['vk'])
+        L.append(f'<b>🌐 ВКонтакте ({n}):</b>')
+        for i, p in enumerate(r['vk'][:5]): 
+            L.append(f'{_t(i,n,5)} <a href="{p.get("url","")}">{_esc(p["name"])}</a>')
         L.append('')
+        
     if r.get('ok'):
-        n = len(r['ok']); L.append(f'<b>🌐 Одноклассники ({n}):</b>')
-        for i, p in enumerate(r['ok'][:5]): L.append(f'{_t(i,n,5)} <a href="{p.get("url","")}">{_esc(p["name"])}</a>')
+        n = len(r['ok'])
+        L.append(f'<b>🌐 Одноклассники ({n}):</b>')
+        for i, p in enumerate(r['ok'][:5]): 
+            L.append(f'{_t(i,n,5)} <a href="{p.get("url","")}">{_esc(p["name"])}</a>')
         L.append('')
+        
     tg = r.get('telegram', [])
     if tg:
         if isinstance(tg, list) and tg:
-            n = len(tg); L.append(f'<b>✈ Telegram ({n}):</b>')
+            n = len(tg)
+            L.append(f'<b>✈ Telegram ({n}):</b>')
             for i, t in enumerate(tg[:5]):
-                if isinstance(t, dict): L.append(f'{_t(i,n,5)} <code>{t["username"]} (ID: {t["id"]})</code>')
-                else: L.append(f'{_t(i,n,5)} <code>{t}</code>')
-        elif isinstance(tg, str): L.append(f'✈ Telegram: <code>{tg}</code>')
+                if isinstance(t, dict): 
+                    L.append(f'{_t(i,n,5)} <code>{t["username"]} (ID: {t["id"]})</code>')
+                else: 
+                    L.append(f'{_t(i,n,5)} <code>{t}</code>')
+        elif isinstance(tg, str): 
+            L.append(f'✈ Telegram: <code>{tg}</code>')
         L.append('')
+        
     if r.get('emails'):
-        n = len(r['emails']); L.append(f'<b>📧 E-mail ({n}):</b>')
-        for i, e in enumerate(r['emails'][:5]): L.append(f'{_t(i,n,5)} <code>{e}</code>')
+        n = len(r['emails'])
+        L.append(f'<b>📧 E-mail ({n}):</b>')
+        for i, e in enumerate(r['emails'][:5]): 
+            L.append(f'{_t(i,n,5)} <code>{e}</code>')
         L.append('')
-    if r.get('fios'): L.append(f'👤 ФИО: <b><code>{_esc(r["fios"][0])}</code></b>'); L.append('')
+        
+    if r.get('fios'): 
+        L.append(f'👤 ФИО: <b><code>{_esc(r["fios"][0])}</code></b>')
+        L.append('')
+        
     L.append('📱 Найдено через <b>Umbrella Search</b>')
     return '\n'.join(L)
 
@@ -400,7 +441,7 @@ def get_btns(phone):
     ])
 
 # =====================================================
-# KEYBOARDS
+# ИНТЕРФЕЙС ГЛАВНОГО БОТА (КНОПКИ И ТЕКСТЫ)
 # =====================================================
 def kb_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -419,27 +460,13 @@ def kb_back_main():
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back")]
     ])
 
-# =====================================================
-# TEXTS
-# =====================================================
-T_MAIN_MENU = """🏠 <b>Вы находитесь в главном меню</b>
-
-> By Umbrella Search"""
-
+T_MAIN_MENU = "🏠 <b>Вы находитесь в главном меню</b>\n\n> By Umbrella Search"
 T_EXAMPLES = """ℹ️ <b>Основные примеры использования сервиса</b>
 
-👤 Для ФИО:
-Фамилия Имя Отчество
-
-📱 Для контактных данных:
-Номер в международном формате
-
-📧 Для электронной почты:
-Полный любой электронный адрес
-
-👁‍🗨 Для телеграм профиля:
-@логин
-tgАЙДИ"""
+👤 Для ФИО: Фамилия Имя Отчество
+📱 Для контактных данных: Номер в международном формате
+📧 Для электронной почты: Полный любой электронный адрес
+👁‍🗨 Для телеграм профиля: @логин или tgАЙДИ"""
 
 T_SEARCH_PROMPT = """🔍 <b>Отправьте запрос для поиска</b>
 
@@ -450,12 +477,12 @@ T_SEARCH_PROMPT = """🔍 <b>Отправьте запрос для поиска
 📧 <code>email@mail.ru</code> — электронная почта"""
 
 T_SEARCH_LOCK = '<b>🔍 Поиск выполняется</b>\n\nДождитесь завершения текущего поиска.'
-T_NOFMT = '<b>❌ Не удалось распознать формат</b>\n\nОтправьте номер, @username, Telegram ID, ФИО, email или номер авто.'
-T_ERR = '<b>❌ Ошибка</b>\n\nПопробуйте позже.'
-T_SEARCH = '<b>🔍 Поиск...</b>\n\nПожалуйста подождите.'
+T_NOFMT = '<b>❌ Не удалось распознать формат</b>\n\nОтправьте номер, @username, Telegram ID, ФИО или email.'
+T_ERR = '<b>❌ Ошибка при поиске</b>\n\nПопробуйте позже.'
+T_SEARCH = '<b>🔍 Поиск по базам SJ...</b>\n\nПожалуйста, подождите.'
 
 # =====================================================
-# BOT CORE
+# ЗАПУСК AIOGRAM
 # =====================================================
 async def main():
     bot = Bot(token=GATEWAY_TOKEN)
@@ -496,14 +523,16 @@ async def main():
 
         mode = None
         query = txt
+        
+        # Определяем формат ввода
         if is_phone(txt):
             mode = 'phone'
-        elif is_uname(txt):
-            mode = 'username'
-            if not query.startswith('@'):
-                query = '@' + query
         elif is_id(txt):
             mode = 'id'
+        elif is_uname(txt):
+            mode = 'username'
+            if not query.startswith('@') and not query.isdigit():
+                query = '@' + query
         elif re.match(r'^[А-ЯЁа-яё]+\s+[А-ЯЁа-яё]+', txt):
             mode = 'fio'
         elif '@' in txt and '.' in txt:
@@ -516,22 +545,23 @@ async def main():
 
         search_locks[uid] = True
         msg = await m.answer(T_SEARCH)
-        logger.info(f"Search: {uid} {mode} {query}")
+        logger.info(f"Запрос от {uid}: режим={mode}, запрос={query}")
 
         try:
             result, elapsed = await do_search(mode, query)
             txt_r = fmt_result(result, query)
-            txt_r += f'\n<i>{elapsed:.1f}s</i>'
+            txt_r += f'\n<i>Время выполнения: {elapsed:.1f}s</i>'
+            
             kb = get_btns(result.get('phone'))
-            await msg.edit_text(txt_r, reply_markup=kb) if kb else await msg.edit_text(txt_r)
-            logger.info(f"Done: {uid} {elapsed:.2f}s")
+            await msg.edit_text(txt_r, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True) if kb else await msg.edit_text(txt_r, parse_mode="HTML", disable_web_page_preview=True)
+            logger.info(f"Успешно обработано для {uid} за {elapsed:.2f}s")
         except Exception as e:
-            logger.error(f"Err {uid}: {e}", exc_info=True)
+            logger.error(f"Ошибка обработки у юзера {uid}: {e}", exc_info=True)
             await msg.edit_text(T_ERR)
 
         search_locks[uid] = False
 
-    logger.info("Bot starting...")
+    logger.info("Бот запускается...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
