@@ -274,60 +274,6 @@ async def deepsearch(query):
 # =====================================================
 # PARSERS
 # =====================================================
-def parse_sj(text):
-    c = clean_md(text)
-    d = {'phone': None, 'operator': None, 'region': None, 'country': None,
-         'telegram': [], 'books': [], 'vk': [], 'ok': []}
-    d['phone'] = _rx('phone', c)
-    d['operator'] = _rx('operator', c)
-    d['region'] = _rx('region', c)
-    d['country'] = _rx('country', c)
-    for u, uid in RE['tg'].findall(c):
-        d['telegram'].append({'username': u, 'id': uid})
-    pb = RE['pb'].search(c)
-    if pb:
-        raw = re.sub(r'\s+', ' ', pb.group(1)).strip()
-        d['books'] = [n.strip() for n in raw.split(',') if n.strip() and len(n.strip()) > 1]
-    for n, u in RE['vk'].findall(c):
-        d['vk'].append({'name': re.sub(r'\s*\d{2}\.\d{2}\.\d{4}', '', n).strip(), 'url': u.strip()})
-    for n, u in RE['ok'].findall(c):
-        d['ok'].append({'name': n.strip(), 'url': u.strip()})
-    return d
-
-def parse_lolsas(text):
-    t = RE['strip_stars'].sub('', text)
-    d = {'type': None, 'user_id': None, 'geo': None, 'names': [], 'usernames': [],
-         'first_msg': None, 'registration': None, 'lols_ban': None, 'stats': None}
-    sec = None
-    for line in t.split('\n'):
-        cl = line.strip().replace('┊', '').replace('├', '').replace('└', '').strip()
-        if cl in ('user', 'bot', 'channel'):
-            d['type'] = cl
-        m = RE['ls_uid'].search(cl)
-        if m: d['user_id'] = m.group(1)
-        m = RE['ls_geo'].search(cl)
-        if m: d['geo'] = m.group(1).strip()
-        if RE['ls_name_sec'].match(cl):
-            sec = 'name'; continue
-        if RE['ls_uname_sec'].match(cl):
-            sec = 'uname'; continue
-        if sec == 'name':
-            m = RE['ls_name'].search(cl)
-            if m: d['names'].append(m.group(1).strip())
-            else: sec = None
-        if sec == 'uname':
-            m = RE['ls_uname'].search(cl)
-            if m: d['usernames'].append(m.group(1))
-            else: sec = None
-        m = RE['ls_fmsg'].search(cl)
-        if m: d['first_msg'] = m.group(1).strip(); sec = None
-        m = RE['ls_reg'].search(cl)
-        if m: d['registration'] = m.group(1).strip()
-        m = RE['ls_ban'].search(cl)
-        if m: d['lols_ban'] = cl
-        m = RE['ls_stats'].search(cl)
-        if m: d['stats'] = m.group(1).strip()
-    return d
 
 # =====================================================
 # TELETHON SEARCH
