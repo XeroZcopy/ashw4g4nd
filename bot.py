@@ -23,7 +23,7 @@ from aiogram.types import (
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ACCOUNTS_FILE = os.path.join(BASE_DIR, 'accounts.json')
 
-GATEWAY_TOKEN = 20:AAFMJY_4WYgW06AHw7hRYHYQYRJXdhTmtkY'
+GATEWAY_TOKEN = '8705134820:AAFMJY_4WYgW06AHw7hRYHYQYRJXdhTmtkY'
 SPONSOR_CHANNEL = '@bothkm'
 
 BOT_SJ = 'sjgdfj0ghjdhjjegtjjebot'
