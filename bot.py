@@ -52,8 +52,8 @@ GOOGLE_CX = "84a64448a902c4626"
 
 TONCENTER_URL = "https://toncenter.com/api/v3"
 
-DEPSEARCH_TOKEN = "w8wxpMncT84SyYSDobV6zSFdZGqcnAoJ"
-DEPSEARCH_BACKUP_TOKEN = "w8wxpMncT84SyYSDobV6zSFdZGqcnAoJ"
+DEPSEARCH_TOKEN = "x5OeEQZZbaRv7wljkHXuETQ7JByEznlY"
+DEPSEARCH_BACKUP_TOKEN = "x5OeEQZZbaRv7wljkHXuETQ7JByEznlY"
 
 BLACKEYE_TOKEN = "R5dxhMW1AyqJkjAPyWVkjA"
 BLACKEYE_URL = "https://blackeyebot.duckdns.org/api/v1"
