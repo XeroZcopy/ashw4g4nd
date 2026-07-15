@@ -58,7 +58,7 @@ DEPSEARCH_BACKUP_TOKEN = "w8wxpMncT84SyYSDobV6zSFdZGqcnAoJ"
 BLACKEYE_TOKEN = "R5dxhMW1AyqJkjAPyWVkjA"
 BLACKEYE_URL = "https://blackeyebot.duckdns.org/api/v1"
 
-REASON_API_KEY = "jupit-6369a9ee7ac97336c92a4297b2"
+REASON_API_KEY = "jupit-54cb687d48b31e8234d6ab7f4f"
 
 TG_OSINT_TOKEN = "76:fBn742F2bJNyb6wW6jatmrZ3NVkogjjO"
 TG_OSINT_BASE_URL = "https://kartoshka.free/v1"
